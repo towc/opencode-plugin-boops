@@ -22,16 +22,42 @@ const sounds = JSON.parse(readFileSync(soundsPath, "utf-8"));
 
 // Available OpenCode events
 const availableEvents = [
-  "session.idle", "permission.asked", "session.error",
-  "command.executed", "file.edited", "file.watcher.updated",
-  "installation.updated", "lsp.client.diagnostics", "lsp.updated",
-  "message.part.removed", "message.part.updated", "message.removed", "message.updated",
-  "permission.replied", "server.connected",
-  "session.created", "session.compacted", "session.deleted", "session.diff", "session.status", "session.updated",
+  "command.executed",
+  "file.edited",
+  "file.watcher.updated",
+  "installation.updated",
+  "lsp.client.diagnostics",
+  "lsp.updated",
+  "message.part.removed",
+  "message.part.updated",
+  "message.removed",
+  "message.updated",
+  "permission.asked",
+  "permission.replied",
+  "server.connected",
+  "session.compacted",
+  "session.created",
+  "session.deleted",
+  "session.diff",
+  "session.error",
+  "session.idle",
+  "session.status",
+  "session.updated",
   "todo.updated",
-  "tool.execute.before", "tool.execute.after",
-  "tui.prompt.append", "tui.command.execute", "tui.toast.show"
+  "tool.execute.after",
+  "tool.execute.before",
+  "tui.command.execute",
+  "tui.prompt.append",
+  "tui.toast.show"
 ];
+
+// System/custom events (separate section)
+const systemEvents = [
+  "__fallback"
+];
+
+// Combined array for the picker (system events at the end)
+const allEvents = [...availableEvents, ...systemEvents];
 
 // Cache directory
 const CACHE_DIR = "/tmp/opencode-boops/cache";
@@ -59,9 +85,6 @@ const PLUGIN_INSTALLED = isPluginInstalled();
 
 // Event descriptions for the picker
 const eventDescriptions = {
-  "session.idle": "AI completes response",
-  "permission.asked": "AI needs permission",
-  "session.error": "Error occurs",
   "command.executed": "Command executed",
   "file.edited": "File edited",
   "file.watcher.updated": "File watcher detected change",
@@ -72,20 +95,24 @@ const eventDescriptions = {
   "message.part.updated": "Message part updated",
   "message.removed": "Message removed",
   "message.updated": "Message updated",
+  "permission.asked": "AI needs permission",
   "permission.replied": "Permission response given",
   "server.connected": "Connected to server",
-  "session.created": "New session created",
   "session.compacted": "Session compacted",
+  "session.created": "New session created",
   "session.deleted": "Session deleted",
   "session.diff": "Session diff generated",
+  "session.error": "Error occurs",
+  "session.idle": "AI completes response",
   "session.status": "Session status changed",
   "session.updated": "Session updated",
   "todo.updated": "Todo list updated",
-  "tool.execute.before": "Before tool execution",
   "tool.execute.after": "After tool execution",
-  "tui.prompt.append": "Text appended to prompt",
+  "tool.execute.before": "Before tool execution",
   "tui.command.execute": "TUI command executed",
-  "tui.toast.show": "Toast notification shown"
+  "tui.prompt.append": "Text appended to prompt",
+  "tui.toast.show": "Toast notification shown",
+  "__fallback": "Fallback sound when primary fails"
 };
 
 // Load current boops.toml config
@@ -121,6 +148,14 @@ function saveConfig(config) {
   if (config.sounds) {
     for (const [event, sound] of Object.entries(config.sounds).sort()) {
       content += `"${event}" = "${sound}"\n`;
+    }
+  }
+  
+  // Add fallbacks section if there are any
+  if (config.fallbacks && Object.keys(config.fallbacks).length > 0) {
+    content += "\n[fallbacks]\n";
+    for (const [key, sound] of Object.entries(config.fallbacks).sort()) {
+      content += `${key} = "${sound}"\n`;
     }
   }
   
@@ -810,9 +845,9 @@ async function browse() {
     
     // Instructions
     if (PLUGIN_INSTALLED) {
-      console.log('  \x1b[38;5;240m↑/↓ navigate  Enter play current  Ctrl+S save & exit  ESC cancel\x1b[0m');
+      console.log('  \x1b[38;5;240m\x1b[38;5;67m↑/↓\x1b[38;5;240m navigate  \x1b[38;5;67mEnter\x1b[38;5;240m play current  \x1b[38;5;67mCtrl+S\x1b[38;5;240m save & exit  \x1b[38;5;67mESC\x1b[38;5;240m cancel\x1b[0m');
     } else {
-      console.log('  \x1b[38;5;240m↑/↓ navigate  Enter play current  ESC cancel  \x1b[38;5;208m(save disabled - plugin not installed)\x1b[0m');
+      console.log('  \x1b[38;5;240m\x1b[38;5;67m↑/↓\x1b[38;5;240m navigate  \x1b[38;5;67mEnter\x1b[38;5;240m play current  \x1b[38;5;67mESC\x1b[38;5;240m cancel  \x1b[38;5;208m(save disabled - plugin not installed)\x1b[0m');
     }
     console.log('');
     
@@ -821,13 +856,25 @@ async function browse() {
     // Fixed lines: 4 (top) + 2 (bottom) = 6
     const fixedLines = 6;
     const maxVisibleEvents = Math.max(1, termHeight - fixedLines);
-    const scrollOffset = Math.max(0, Math.min(state.pickerSelectedEvent - Math.floor(maxVisibleEvents / 2), availableEvents.length - maxVisibleEvents));
-    const endIndex = Math.min(scrollOffset + maxVisibleEvents, availableEvents.length);
+    const scrollOffset = Math.max(0, Math.min(state.pickerSelectedEvent - Math.floor(maxVisibleEvents / 2), allEvents.length - maxVisibleEvents));
+    const endIndex = Math.min(scrollOffset + maxVisibleEvents, allEvents.length);
     
     for (let i = scrollOffset; i < endIndex; i++) {
-      const event = availableEvents[i];
+      const event = allEvents[i];
       const isSelected = i === state.pickerSelectedEvent;
-      const currentSound = config.sounds ? config.sounds[event] : null;
+      
+      // Add separator before system events
+      if (i === availableEvents.length && i >= scrollOffset) {
+        console.log(`  ${'─'.repeat(Math.min(60, termWidth - 4))}`);
+      }
+      
+      // Get current sound from appropriate config section
+      let currentSound = null;
+      if (event === '__fallback') {
+        currentSound = config.fallbacks ? config.fallbacks.default : null;
+      } else {
+        currentSound = config.sounds ? config.sounds[event] : null;
+      }
       
       const selectionBg = isSelected ? '\x1b[48;5;235m' : '';
       const reset = '\x1b[0m';
@@ -1085,21 +1132,26 @@ async function browse() {
       const config = loadCurrentConfig();
       const boxX = termWidth - pickerWidth;
       const boxStartY = stickyNavbar ? (topBlankLine + 4) : (topBlankLine + 1); // Start below header in sticky mode, else near top
-      const boxHeight = Math.min(availableEvents.length + 4, termHeight - boxStartY - fixedFooterLines);
+      const boxHeight = Math.min(allEvents.length + 5, termHeight - boxStartY - fixedFooterLines); // +5 for separator line
       
       // Calculate scroll offset for event list
       const maxVisibleEvents = boxHeight - 6; // Reserve space for header(2) + description(2) + footer(2)
-      const eventScrollOffset = Math.max(0, Math.min(state.pickerSelectedEvent - Math.floor(maxVisibleEvents / 2), availableEvents.length - maxVisibleEvents));
-      const eventEndIndex = Math.min(eventScrollOffset + maxVisibleEvents, availableEvents.length);
+      const eventScrollOffset = Math.max(0, Math.min(state.pickerSelectedEvent - Math.floor(maxVisibleEvents / 2), allEvents.length - maxVisibleEvents));
+      const eventEndIndex = Math.min(eventScrollOffset + maxVisibleEvents, allEvents.length);
       
       // Get selected event info
-      const selectedEvent = availableEvents[state.pickerSelectedEvent];
+      const selectedEvent = allEvents[state.pickerSelectedEvent];
       const eventDesc = eventDescriptions[selectedEvent] || "No description available";
       
       // Draw each line of the picker box
       for (let row = 0; row < boxHeight; row++) {
         const screenY = boxStartY + row;
         process.stdout.write(`\x1b[${screenY};${boxX}H`); // Position cursor
+        
+        // Clear the area where we'll draw the picker (from cursor to end of line)
+        // Draw a solid background to cover anything underneath
+        process.stdout.write(' '.repeat(pickerWidth));
+        process.stdout.write(`\x1b[${screenY};${boxX}H`); // Reposition cursor
         
         if (row === 0) {
           // Top border with title
@@ -1132,10 +1184,23 @@ async function browse() {
         } else {
           // Event list item
           const eventIndex = eventScrollOffset + (row - 3);
+          
           if (eventIndex < eventEndIndex) {
-            const event = availableEvents[eventIndex];
+            const event = allEvents[eventIndex];
             const isSelected = eventIndex === state.pickerSelectedEvent;
-            const currentSound = config.sounds ? config.sounds[event] : null;
+            
+            // Show separator before system events
+            if (eventIndex === availableEvents.length) {
+              process.stdout.write(`\x1b[38;5;240m│ ${'─'.repeat(pickerWidth - 4)} │\x1b[0m`);
+            } else {
+            
+            // Get current sound from appropriate config section
+            let currentSound = null;
+            if (event === '__fallback') {
+              currentSound = config.fallbacks ? config.fallbacks.default : null;
+            } else {
+              currentSound = config.sounds ? config.sounds[event] : null;
+            }
             
             const bg = isSelected ? '\x1b[48;5;235m' : '';
             
@@ -1153,10 +1218,11 @@ async function browse() {
                 : event.padEnd(pickerWidth - 6);
             }
             
-            const indicator = currentSound ? '•' : ' ';
-            const indicatorColor = currentSound ? '\x1b[38;5;76m' : '';
-            
-            process.stdout.write(`\x1b[38;5;240m│\x1b[0m${bg}${indicatorColor}${indicator}\x1b[0m${bg} ${eventText} \x1b[0m\x1b[38;5;240m│\x1b[0m`);
+              const indicator = currentSound ? '•' : ' ';
+              const indicatorColor = currentSound ? '\x1b[38;5;76m' : '';
+              
+              process.stdout.write(`\x1b[38;5;240m│\x1b[0m${bg}${indicatorColor}${indicator}\x1b[0m${bg} ${eventText} \x1b[0m\x1b[38;5;240m│\x1b[0m`);
+            }
           } else {
             // Empty line
             process.stdout.write(`\x1b[38;5;240m│${' '.repeat(pickerWidth - 2)}│\x1b[0m`);
@@ -1176,7 +1242,7 @@ async function browse() {
     if (state.searchQuery || state.searchMode) {
       // Search mode: show search box on left, hints on right
       const searchBox = ` /${state.searchQuery}`;
-      const searchHint = '\x1b[38;5;240m/ to refine  esc to clear\x1b[0m';
+      const searchHint = '\x1b[38;5;240m\x1b[38;5;67m/\x1b[38;5;240m to refine  \x1b[38;5;67mesc\x1b[38;5;240m to clear\x1b[0m';
       const searchBoxVisible = 2 + state.searchQuery.length; // " /" + query
       const hintVisible = getVisibleLength(searchHint);
       
@@ -1216,10 +1282,10 @@ async function browse() {
       let controls;
       if (state.pickerMode) {
         controls = PLUGIN_INSTALLED 
-          ? ' \x1b[38;5;240m↑/↓ select  enter play  a assign  d unassign  ←/esc close\x1b[0m'
-          : ' \x1b[38;5;240m↑/↓ select event  enter play  ←/esc close  \x1b[38;5;208m(save disabled)\x1b[0m';
+          ? ' \x1b[38;5;240m\x1b[38;5;67m↑/↓\x1b[38;5;240m select  \x1b[38;5;67menter\x1b[38;5;240m play  \x1b[38;5;67ma\x1b[38;5;240m assign  \x1b[38;5;67md\x1b[38;5;240m unassign  \x1b[38;5;67m←/esc\x1b[38;5;240m close\x1b[0m'
+          : ' \x1b[38;5;240m\x1b[38;5;67m↑/↓\x1b[38;5;240m select event  \x1b[38;5;67menter\x1b[38;5;240m play  \x1b[38;5;67m←/esc\x1b[38;5;240m close  \x1b[38;5;208m(save disabled)\x1b[0m';
       } else {
-        controls = ' \x1b[38;5;240m↑/↓ navigate  ←/→ tags  / search  s assign  enter play  q quit\x1b[0m';
+        controls = ' \x1b[38;5;240m\x1b[38;5;67m↑/↓\x1b[38;5;240m navigate  \x1b[38;5;67m←/→\x1b[38;5;240m tags  \x1b[38;5;67m/\x1b[38;5;240m search  \x1b[38;5;67ms\x1b[38;5;240m assign  \x1b[38;5;67menter\x1b[38;5;240m play  \x1b[38;5;67mq\x1b[38;5;240m quit\x1b[0m';
       }
       
       // Attribution with manual hover/click
@@ -1845,7 +1911,7 @@ async function browse() {
         return;
       } else if (key === '\u001b[B' || key === 'j') {
         // Down arrow
-        if (state.pickerSelectedEvent < availableEvents.length - 1) {
+        if (state.pickerSelectedEvent < allEvents.length - 1) {
           state.pickerSelectedEvent++;
         }
         render();
@@ -1853,8 +1919,15 @@ async function browse() {
       } else if (key === '\r' || key === ' ') {
         // Enter/Space - play current sound for selected event
         const config = loadCurrentConfig();
-        const event = availableEvents[state.pickerSelectedEvent];
-        const currentSound = config.sounds ? config.sounds[event] : null;
+        const event = allEvents[state.pickerSelectedEvent];
+        
+        // Get current sound from appropriate config section
+        let currentSound = null;
+        if (event === '__fallback') {
+          currentSound = config.fallbacks ? config.fallbacks.default : null;
+        } else {
+          currentSound = config.sounds ? config.sounds[event] : null;
+        }
         if (currentSound) {
           const soundEntry = sounds.find(s => s.id === currentSound || s.name === currentSound);
           if (soundEntry) {
@@ -1870,10 +1943,16 @@ async function browse() {
       } else if (key === 'a') {
         // 'a' - assign sound to selected event (auto-saves)
         const config = loadCurrentConfig();
-        const event = availableEvents[state.pickerSelectedEvent];
+        const event = allEvents[state.pickerSelectedEvent];
         
-        if (!config.sounds) config.sounds = {};
-        config.sounds[event] = state.pickerSound.name; // Save friendly name, not ID
+        // Check if this is a system event
+        if (event === '__fallback') {
+          if (!config.fallbacks) config.fallbacks = {};
+          config.fallbacks.default = state.pickerSound.name; // Save friendly name
+        } else {
+          if (!config.sounds) config.sounds = {};
+          config.sounds[event] = state.pickerSound.name; // Save friendly name, not ID
+        }
         
         // Auto-save to config file
         saveConfig(config);
@@ -1884,11 +1963,19 @@ async function browse() {
       } else if (key === 'd') {
         // 'd' - unassign/delete sound from selected event
         const config = loadCurrentConfig();
-        const event = availableEvents[state.pickerSelectedEvent];
+        const event = allEvents[state.pickerSelectedEvent];
         
-        if (config.sounds && config.sounds[event]) {
-          delete config.sounds[event];
-          saveConfig(config);
+        // Check if this is a system event
+        if (event === '__fallback') {
+          if (config.fallbacks && config.fallbacks.default) {
+            delete config.fallbacks.default;
+            saveConfig(config);
+          }
+        } else {
+          if (config.sounds && config.sounds[event]) {
+            delete config.sounds[event];
+            saveConfig(config);
+          }
         }
         
         // Stay in picker mode
@@ -1985,6 +2072,7 @@ async function browse() {
         
       case '\u001b[A': // Up arrow
       case 'k':
+        if (state.pickerMode) break; // Picker handles its own navigation
         if (state.selectedLine > 0) {
           state.selectedLine--;
           // Skip non-interactive lines
@@ -2026,6 +2114,7 @@ async function browse() {
         
       case '\u001b[B': // Down arrow
       case 'j':
+        if (state.pickerMode) break; // Picker handles its own navigation
         if (state.selectedLine < lines.length - 1) {
           state.selectedLine++;
           // Skip non-interactive lines
@@ -2050,6 +2139,7 @@ async function browse() {
         
       case '\u001b[C': // Right arrow
       case 'l':
+        if (state.pickerMode) break; // Picker doesn't use right arrow
         // Navigate tags right, maintaining sound position
         if (state.selectedTagIndex < allTags.length - 1) {
           state.selectedTagIndex++;
@@ -2072,6 +2162,8 @@ async function browse() {
         
       case '\u001b[D': // Left arrow
       case 'h':
+        // Picker mode: left arrow exits (handled earlier in picker section)
+        if (state.pickerMode) break; // Already handled in picker mode section
         // Navigate tags left, maintaining sound position
         if (state.selectedTagIndex > -1) {
           state.selectedTagIndex--;
@@ -2093,6 +2185,7 @@ async function browse() {
         break;
         
       case '/':
+        if (state.pickerMode) break; // Block search when picker is open
         // Enter search mode (or re-enter if results are showing)
         state.searchMode = true;
         if (!state.searchQuery) {
@@ -2104,6 +2197,7 @@ async function browse() {
         break;
         
       case 's':
+        if (state.pickerMode) break; // Block opening another picker
         // Open event picker for selected sound
         {
           const selectedLine = lines[state.selectedLine];
@@ -2119,6 +2213,7 @@ async function browse() {
       case 'p':
       case '\r': // Enter key
       case ' ':  // Space key
+        if (state.pickerMode) break; // Picker handles these keys
         {
           const selectedLine = lines[state.selectedLine];
         
