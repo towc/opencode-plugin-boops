@@ -96,10 +96,13 @@ export const BoopsPlugin: Plugin = async ({ client }) => {
     return config
   }
 
+  // Load initial config (will be reloaded on every event for instant updates)
   let config = await loadConfig()
 
   // Detect available sound player
   const detectPlayer = async (): Promise<string> => {
+    // Reload config to check for player changes
+    config = await loadConfig()
     if (config.player) return config.player
 
     const players = ["paplay", "aplay", "afplay"]
@@ -306,6 +309,9 @@ export const BoopsPlugin: Plugin = async ({ client }) => {
 
   return {
     event: async ({ event }) => {
+      // Reload config on every event for instant updates (no restart needed!)
+      config = await loadConfig()
+      
       // Log session.idle events for debugging (helpful for users configuring filters)
       if (event.type === "session.idle") {
         await log(`session.idle event received`, { 

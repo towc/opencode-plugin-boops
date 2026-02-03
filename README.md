@@ -69,6 +69,8 @@ The plugin listens to OpenCode events and plays sounds based on your configurati
 - **`permission.asked`** - AI needs permission → gentle "relax" chime
 - **`session.error`** - An error occurs → friendly "magic" alert
 
+**Instant config reload:** The config is reloaded on every event, so changes take effect immediately without restarting OpenCode! Edit your config, trigger an event, and hear the new sound instantly.
+
 Sounds are downloaded once on first use and cached in `~/.cache/opencode/boops/` for instant playback.
 
 ## Configuration
