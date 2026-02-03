@@ -127,7 +127,7 @@ function loadCurrentConfig() {
   }
 }
 
-// Save config to boops.toml (preserves existing entries and comments)
+// Save config to boops.toml
 function saveConfig(config) {
   if (!PLUGIN_INSTALLED) {
     console.error("\n⚠️  Cannot save: Plugin not installed");
@@ -138,48 +138,14 @@ function saveConfig(config) {
   
   const configPath = join(homedir(), ".config", "opencode", "plugins", "boops", "boops.toml");
   
-  // Read existing config to preserve comments and other sections
-  let existingContent = "";
-  if (existsSync(configPath)) {
-    existingContent = readFileSync(configPath, "utf-8");
-  }
-  
-  // Parse existing [sounds] section to merge with new values
-  const existingSounds = {};
-  if (existingContent) {
-    const lines = existingContent.split("\n");
-    let inSoundsSection = false;
-    
-    for (const line of lines) {
-      const trimmed = line.trim();
-      
-      if (trimmed === "[sounds]") {
-        inSoundsSection = true;
-        continue;
-      }
-      
-      if (trimmed.startsWith("[") && trimmed !== "[sounds]") {
-        inSoundsSection = false;
-      }
-      
-      if (inSoundsSection && !trimmed.startsWith("#") && trimmed) {
-        const match = trimmed.match(/^"?([^"=]+)"?\s*=\s*"?([^"#]+)"?/);
-        if (match) {
-          const [, key, value] = match;
-          existingSounds[key.trim()] = value.trim().replace(/"/g, "");
-        }
-      }
-    }
-  }
-  
-  // Merge new sounds with existing
-  const mergedSounds = { ...existingSounds, ...(config.sounds || {}) };
-  
-  // Write back, preserving the header
+  // Write config as-is (don't merge with file, since config was loaded from file)
+  // This allows deletions to work properly
   let content = "# OpenCode Boops Plugin Configuration\n# Sounds can be local file paths OR URLs (automatically downloaded and cached)\n\n[sounds]\n";
   
-  for (const [event, sound] of Object.entries(mergedSounds).sort()) {
-    content += `"${event}" = "${sound}"\n`;
+  if (config.sounds) {
+    for (const [event, sound] of Object.entries(config.sounds).sort()) {
+      content += `"${event}" = "${sound}"\n`;
+    }
   }
   
   writeFileSync(configPath, content);
