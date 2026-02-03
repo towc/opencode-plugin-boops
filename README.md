@@ -13,19 +13,27 @@ Sound notifications for OpenCode - plays pleasant "boop" sounds when tasks compl
 
 ## Installation
 
-Add to your OpenCode config file:
+### Quick Install (Recommended)
 
-**Global installation** (recommended):
 ```bash
-# Edit ~/.config/opencode/opencode.json
+npx opencode-plugin-boops install
 ```
 
-**Per-project installation**:
-```bash
-# Edit opencode.json in your project root
+This automatically adds the plugin to your OpenCode config. Then restart OpenCode.
+
+### Manual Installation
+
+Add the plugin to your OpenCode config file:
+
+**Global** (`~/.config/opencode/opencode.json`):
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-plugin-boops"]
+}
 ```
 
-Add the plugin to the config:
+**Per-project** (`opencode.json` in project root):
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
@@ -35,21 +43,17 @@ Add the plugin to the config:
 
 Then restart OpenCode. The plugin will be automatically downloaded and installed from npm.
 
-### Quick setup
-
-If you don't have an OpenCode config yet:
+## CLI Commands
 
 ```bash
-# Create global config
-mkdir -p ~/.config/opencode
-echo '{"$schema":"https://opencode.ai/config.json","plugin":["opencode-plugin-boops"]}' > ~/.config/opencode/opencode.json
-```
+# Install plugin (adds to OpenCode config)
+npx opencode-plugin-boops install
 
-Or for a specific project:
+# Browse 448 sounds with semantic tags
+npx opencode-plugin-boops browse
 
-```bash
-# In your project directory
-echo '{"$schema":"https://opencode.ai/config.json","plugin":["opencode-plugin-boops"]}' > opencode.json
+# Show help
+npx opencode-plugin-boops
 ```
 
 ## How it works
@@ -230,11 +234,11 @@ The test command automatically reloads your config file, so you can edit `boops.
 The plugin includes a beautiful TUI for browsing and assigning sounds:
 
 ```bash
-# If plugin is installed
-~/.config/opencode/plugins/boops/browse
-
-# Or try it with npx (browse-only, saving disabled)
+# Browse and test sounds
 npx opencode-plugin-boops browse
+
+# Or after installation:
+~/.config/opencode/plugins/boops/browse
 ```
 
 Features:

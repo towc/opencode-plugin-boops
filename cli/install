@@ -1,0 +1,59 @@
+#!/usr/bin/env node
+/**
+ * OpenCode Boops Plugin - Installer
+ * Automatically adds the plugin to your OpenCode config
+ */
+
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { join } from "path";
+import { homedir } from "os";
+
+const CONFIG_DIR = join(homedir(), ".config", "opencode");
+const CONFIG_PATH = join(CONFIG_DIR, "opencode.json");
+const PLUGIN_NAME = "opencode-plugin-boops";
+
+console.log("🔊 OpenCode Boops Plugin Installer\n");
+
+// Ensure config directory exists
+mkdirSync(CONFIG_DIR, { recursive: true });
+
+// Read or create config
+let config;
+if (existsSync(CONFIG_PATH)) {
+  console.log("📝 Found existing OpenCode config");
+  try {
+    const content = readFileSync(CONFIG_PATH, "utf-8");
+    config = JSON.parse(content);
+  } catch (error) {
+    console.error("❌ Failed to parse opencode.json:", error.message);
+    console.log("Please fix your config manually at:", CONFIG_PATH);
+    process.exit(1);
+  }
+} else {
+  console.log("📝 Creating new OpenCode config");
+  config = {
+    "$schema": "https://opencode.ai/config.json",
+  };
+}
+
+// Add plugin if not already present
+if (!config.plugin) {
+  config.plugin = [];
+} else if (typeof config.plugin === "string") {
+  config.plugin = [config.plugin];
+}
+
+if (config.plugin.includes(PLUGIN_NAME)) {
+  console.log("✓ Plugin already installed in config");
+} else {
+  config.plugin.push(PLUGIN_NAME);
+  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n");
+  console.log("✓ Added plugin to OpenCode config");
+}
+
+console.log("\n📍 Config location:", CONFIG_PATH);
+console.log("\n🎵 Next steps:");
+console.log("  1. Restart OpenCode (the plugin will auto-install)");
+console.log("  2. Browse sounds: npx opencode-plugin-boops browse");
+console.log("  3. Customize config: $EDITOR ~/.config/opencode/plugins/boops/boops.toml");
+console.log("\n✨ Done!");

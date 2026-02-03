@@ -1,0 +1,36 @@
+#!/usr/bin/env node
+/**
+ * OpenCode Boops Plugin - CLI Entry Point
+ */
+
+import { spawn } from "child_process";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const command = process.argv[2] || "browse";
+const args = process.argv.slice(3);
+
+const commands = {
+  install: join(__dirname, "install"),
+  browse: join(__dirname, "browse"),
+};
+
+if (!commands[command]) {
+  console.log("OpenCode Boops Plugin\n");
+  console.log("Usage:");
+  console.log("  npx opencode-plugin-boops install  - Add plugin to OpenCode config");
+  console.log("  npx opencode-plugin-boops browse   - Browse and test sounds (default)");
+  console.log("  npx opencode-plugin-boops          - Same as browse");
+  process.exit(1);
+}
+
+const child = spawn(commands[command], args, {
+  stdio: "inherit",
+});
+
+child.on("exit", (code) => {
+  process.exit(code || 0);
+});

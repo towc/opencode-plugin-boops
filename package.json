@@ -23,7 +23,7 @@
   },
   "homepage": "https://github.com/towc/opencode-plugin-boops#readme",
   "bin": {
-    "opencode-plugin-boops": "cli/browse"
+    "opencode-plugin-boops": "cli/main"
   },
   "peerDependencies": {
     "@opencode-ai/plugin": "^1.0.0"
@@ -39,6 +39,8 @@
     "index.ts",
     "sounds.json",
     "boops.default.toml",
+    "cli/main",
+    "cli/install",
     "cli/browse",
     "README.md",
     "LICENSE"
