@@ -1,0 +1,33 @@
+{
+  "name": "opencode-plugin-boops",
+  "version": "1.0.0",
+  "description": "Sound notifications for OpenCode - plays pleasant sounds when tasks complete or input is needed",
+  "main": "index.ts",
+  "type": "module",
+  "keywords": [
+    "opencode",
+    "plugin",
+    "notifications",
+    "sound",
+    "audio",
+    "alerts"
+  ],
+  "author": "towc",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/towc/opencode-plugin-boops.git"
+  },
+  "bugs": {
+    "url": "https://github.com/towc/opencode-plugin-boops/issues"
+  },
+  "homepage": "https://github.com/towc/opencode-plugin-boops#readme",
+  "peerDependencies": {
+    "@opencode-ai/plugin": "^1.0.0"
+  },
+  "files": [
+    "index.ts",
+    "README.md",
+    "LICENSE"
+  ]
+}
