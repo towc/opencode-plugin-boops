@@ -1,0 +1,2122 @@
+#!/usr/bin/env node
+import { readFileSync, existsSync, mkdirSync, writeFileSync, appendFileSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+import { homedir } from "os";
+import { spawn, exec } from "child_process";
+import https from "https";
+
+// Get the directory where this script is located
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Load sounds from the bundled JSON file
+// When installed: sounds.json is in same directory as script
+// When in repo: sounds.json is in parent directory
+let soundsPath = join(__dirname, "sounds.json");
+if (!existsSync(soundsPath)) {
+  soundsPath = join(__dirname, "..", "sounds.json");
+}
+const sounds = JSON.parse(readFileSync(soundsPath, "utf-8"));
+
+// Available OpenCode events
+const availableEvents = [
+  "session.idle", "permission.asked", "session.error",
+  "command.executed", "file.edited", "file.watcher.updated",
+  "installation.updated", "lsp.client.diagnostics", "lsp.updated",
+  "message.part.removed", "message.part.updated", "message.removed", "message.updated",
+  "permission.replied", "server.connected",
+  "session.created", "session.compacted", "session.deleted", "session.diff", "session.status", "session.updated",
+  "todo.updated",
+  "tool.execute.before", "tool.execute.after",
+  "tui.prompt.append", "tui.command.execute", "tui.toast.show"
+];
+
+// Cache directory
+const CACHE_DIR = "/tmp/opencode-boops/cache";
+
+// Check if plugin is properly installed
+// Plugin is installed if index.ts exists in node_modules or as a symlink in ~/.config/opencode/plugins
+function isPluginInstalled() {
+  const configPluginPath = join(homedir(), ".config", "opencode", "plugins", "boops");
+  const nodeModulesPath = join(__dirname, "..", "index.ts");
+  
+  // Check if running from ~/.config/opencode/plugins/boops (proper installation)
+  if (existsSync(join(configPluginPath, "index.ts"))) {
+    return true;
+  }
+  
+  // Check if running from node_modules (npm install)
+  if (existsSync(nodeModulesPath)) {
+    return true;
+  }
+  
+  return false;
+}
+
+const PLUGIN_INSTALLED = isPluginInstalled();
+
+// Load current boops.toml config
+function loadCurrentConfig() {
+  const configPath = join(homedir(), ".config", "opencode", "boops.toml");
+  if (!existsSync(configPath)) {
+    return {};
+  }
+  
+  try {
+    const content = readFileSync(configPath, "utf-8");
+    const config = {};
+    
+    // Simple TOML parser for our use case
+    const lines = content.split("\n");
+    let currentSection = null;
+    
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      
+      // Section header
+      if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+        currentSection = trimmed.slice(1, -1);
+        if (!config[currentSection]) config[currentSection] = {};
+        continue;
+      }
+      
+      // Key = value (handle quoted keys like "session.error")
+      const match = trimmed.match(/^"?([^"=]+)"?\s*=\s*"?([^"]+)"?$/);
+      if (match && currentSection) {
+        const [, key, value] = match;
+        config[currentSection][key.trim()] = value.trim().replace(/"/g, "");
+      }
+    }
+    
+    return config;
+  } catch (e) {
+    return {};
+  }
+}
+
+// Save config to boops.toml
+function saveConfig(config) {
+  if (!PLUGIN_INSTALLED) {
+    console.error("\n⚠️  Cannot save: Plugin not installed");
+    console.error("   Install with: npm install opencode-plugin-boops");
+    console.error("   Or add to your OpenCode config");
+    return false;
+  }
+  
+  const configPath = join(homedir(), ".config", "opencode", "boops.toml");
+  let content = "# OpenCode Boops Plugin Configuration\n\n[sounds]\n";
+  
+  if (config.sounds) {
+    for (const [event, sound] of Object.entries(config.sounds)) {
+      content += `"${event}" = "${sound}"\n`;
+    }
+  }
+  
+  writeFileSync(configPath, content);
+  return true;
+}
+
+// Download and cache sound
+async function downloadSound(url, id) {
+  mkdirSync(CACHE_DIR, { recursive: true });
+  const cachePath = join(CACHE_DIR, `${id}.ogg`);
+  
+  if (existsSync(cachePath)) {
+    return cachePath;
+  }
+  
+  return new Promise((resolve, reject) => {
+    const file = [];
+    https.get(url, (response) => {
+      response.on('data', (chunk) => file.push(chunk));
+      response.on('end', () => {
+        writeFileSync(cachePath, Buffer.concat(file));
+        resolve(cachePath);
+      });
+    }).on('error', reject);
+  });
+}
+
+// Track currently playing process
+let currentPlayingProcess = null;
+
+// Play sound using available player (non-blocking)
+async function playSound(url, id, onComplete) {
+  // Stop any currently playing sound
+  if (currentPlayingProcess) {
+    try {
+      currentPlayingProcess.kill();
+    } catch (e) {
+      // Ignore errors if process already stopped
+    }
+    currentPlayingProcess = null;
+  }
+  
+  const cachePath = await downloadSound(url, id);
+  
+  // Try different players
+  const players = [
+    { cmd: 'ffplay', args: ['-nodisp', '-autoexit', '-loglevel', 'quiet', cachePath] },
+    { cmd: 'mpv', args: ['--no-video', '--really-quiet', cachePath] },
+    { cmd: 'cvlc', args: ['--play-and-exit', cachePath] },
+    { cmd: 'afplay', args: [cachePath] },
+    { cmd: 'paplay', args: [cachePath] }
+  ];
+  
+  for (const player of players) {
+    try {
+      const proc = spawn(player.cmd, player.args, {
+        stdio: 'ignore',
+        detached: false
+      });
+      
+      currentPlayingProcess = proc;
+      
+      // Call onComplete when sound finishes
+      proc.on('exit', () => {
+        if (currentPlayingProcess === proc) {
+          currentPlayingProcess = null;
+          if (onComplete) onComplete();
+        }
+      });
+      
+      return true;
+    } catch (e) {
+      continue;
+    }
+  }
+  
+  return false;
+}
+
+// Group sounds by category
+function groupByCategory(soundsList) {
+  const groups = {
+    positive: [],
+    negative: [],
+    neutral: [],
+    human: [],
+    weird: []
+  };
+  
+  soundsList.forEach(sound => {
+    const cat = sound.category || 'neutral';
+    if (groups[cat]) {
+      groups[cat].push(sound);
+    }
+  });
+  
+  return groups;
+}
+
+// Get currently configured sounds
+function getCurrentSounds(config) {
+  const current = {};
+  
+  for (const [section, values] of Object.entries(config)) {
+    if (values.sound) {
+      current[section] = values.sound;
+    }
+  }
+  
+  return current;
+}
+
+// Main TUI
+async function browse() {
+  // If in non-interactive mode (piped output), just list all
+  if (!process.stdout.isTTY) {
+    sounds.forEach((sound) => {
+      console.log(`${sound.id} - ${sound.name}`);
+    });
+    return;
+  }
+
+  const config = loadCurrentConfig();
+  const currentSounds = getCurrentSounds(config);
+  const grouped = groupByCategory(sounds);
+  
+  // Get all unique tags from sounds (sorted alphabetically)
+  const allTags = [...new Set(sounds.flatMap(s => s.tags || []))].sort();
+  
+  // Color palette for tags (low brightness/contrast)
+  // Using 256-color palette - these are muted/dark colors
+  const tagColorsDim = [
+    60,  // dark purple-blue
+    61,  // dark blue-purple  
+    62,  // dark blue
+    63,  // dark blue-cyan
+    64,  // dark cyan
+    65,  // dark cyan-green
+    66,  // dark green-cyan
+    67,  // dark green
+    68,  // dark blue (current soft blue)
+    96,  // dark purple
+    97,  // dark violet
+    98,  // dark blue-purple
+    99,  // dark blue
+    100, // dark cyan-blue
+  ];
+  
+  // Brighter versions of the same colors for active state
+  const tagColorsBright = [
+    99,  // bright purple-blue
+    105, // bright blue-purple
+    111, // bright blue
+    117, // bright blue-cyan
+    123, // bright cyan
+    87,  // bright cyan-green
+    86,  // bright green-cyan
+    120, // bright green
+    75,  // bright blue
+    141, // bright purple
+    147, // bright violet
+    153, // bright blue-purple
+    159, // bright blue
+    195, // bright cyan-blue
+  ];
+  
+  // Map each tag to a color
+  const tagColorMap = {};
+  allTags.forEach((tag, i) => {
+    const colorIndex = i % tagColorsDim.length;
+    tagColorMap[tag] = {
+      dim: tagColorsDim[colorIndex],
+      bright: tagColorsBright[colorIndex]
+    };
+  });
+  
+  // TUI state
+  const state = {
+    selectedLine: 0,
+    scrollOffset: 0,
+    playingSound: null, // Track which sound is currently playing
+    showFullUrls: false, // Toggle for showing full URLs
+    searchMode: false, // Whether we're in search mode
+    searchQuery: '', // Current search query
+    selectedTagIndex: -1, // -1 means "all tags", >= 0 is index into allTags
+    searchResults: [], // Filtered results from last search
+    selectedTags: [], // Tags of the currently selected sound
+    targetSoundIndex: 0, // Target sound position (like column in text editor)
+    pickerMode: false, // Whether we're in event picker mode
+    pickerSelectedEvent: 0, // Selected event in picker
+    pickerSound: null, // The sound being assigned
+    hoveredTag: null, // Currently hovered tag on a sound line (for highlighting)
+    hoveredNavbarTagIndex: null, // Currently hovered tag in navbar (-1 for *, null for none, 0+ for tag index)
+    hoveredAttribution: false, // Whether the attribution link is hovered
+    hoveredUrl: null // Line index of sound whose URL is hovered
+  };
+  
+  // Helper function to strip ANSI codes and get visible length
+  function getVisibleLength(str) {
+    return str
+      .replace(/\x1b\[[0-9;]*m/g, '')        // Strip CSI sequences (colors)
+      .replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, '') // Strip OSC 8 hyperlinks
+      .length;
+  }
+  
+  // Helper function to create a clickable hyperlink (OSC 8)
+  // This makes the terminal show a pointer cursor on hover
+  function makeHyperlink(url, text) {
+    return `\x1b]8;;${url}\x1b\\${text}\x1b]8;;\x1b\\`;
+  }
+  
+  // Helper function to ensure a string fits on one line
+  function ensureSingleLine(str, maxWidth) {
+    const visibleLen = getVisibleLength(str);
+    if (visibleLen <= maxWidth) {
+      return str;
+    }
+    
+    // Need to truncate - preserve ANSI codes at the end
+    const reset = '\x1b[0m';
+    // Strip all ANSI, truncate, add ellipsis
+    const stripped = str.replace(/\x1b\[[0-9;]*m/g, '');
+    const truncated = stripped.slice(0, maxWidth - 1) + '…';
+    return truncated + reset;
+  }
+  
+  // Helper function to render a single line
+  function renderLine(line, isSelected, termWidth, lineIndex, pickerWidth = 0) {
+    const reset = '\x1b[0m';
+    
+    if (line.type === 'sound') {
+      // In picker mode: hide tags/URLs, dim non-selected sounds
+      if (state.pickerMode) {
+        const nameWithIcon = line.playIcon + line.name;
+        const nameWidth = 25;
+        let namePadded;
+        if (nameWithIcon.length > nameWidth) {
+          namePadded = nameWithIcon.slice(0, nameWidth - 1) + '…';
+        } else {
+          namePadded = nameWithIcon.padEnd(nameWidth);
+        }
+        
+        const dimColor = isSelected ? '' : '\x1b[38;5;240m'; // Dim non-selected
+        const bgHighlight = isSelected ? '\x1b[48;5;235m' : '';
+        const availableWidth = termWidth - pickerWidth - line.indent.length;
+        const padding = ' '.repeat(Math.max(0, availableWidth - nameWidth));
+        
+        console.log(`${line.indent}${bgHighlight}${dimColor}${namePadded}${reset}${padding}`);
+        return;
+      }
+      
+      // Normal mode: Sound lines: name + tags + URL (strictly one line, truncate if needed)
+      const nameWithIcon = line.playIcon + line.name;
+      const nameWidth = 25;
+      // Truncate if too long, pad if too short
+      let namePadded;
+      if (nameWithIcon.length > nameWidth) {
+        namePadded = nameWithIcon.slice(0, nameWidth - 1) + '…';
+      } else {
+        namePadded = nameWithIcon.padEnd(nameWidth);
+      }
+      
+      const indentLength = line.indent.length;
+      const spacing = '   '; // spacing between tags and URL
+      
+      // URL styling - manual since OSC 8 doesn't work well with dynamic content
+      const isUrlHovered = state.hoveredUrl === lineIndex;
+      const urlColor = isUrlHovered ? '\x1b[38;5;75m' : '\x1b[38;5;237m'; // bright blue on hover, dim gray normally
+      const urlUnderline = isUrlHovered ? '\x1b[4m' : ''; // Underline only on hover
+      
+      // Use displayUrl for rendering (shortened version)
+      const urlToDisplay = line.displayUrl || line.url;
+      
+      // Calculate available space for tags + URL
+      // Format: indent(2) + name(25) + tags + spacing(3) + url + margin(2)
+      const remainingWidth = termWidth - indentLength - nameWidth - spacing.length - 2;
+      
+      // Build tag strings
+      const tagData = [];
+      if (line.soundTags && line.soundTags.length > 0) {
+        for (const tag of line.soundTags) {
+          const colors = tagColorMap[tag];
+          const useBright = state.selectedTags.includes(tag);
+          const isHovered = isSelected && state.hoveredTag === tag;
+          const color = useBright ? colors.bright : colors.dim;
+          const bgHighlight = '\x1b[48;5;235m';
+          const underline = useBright ? '\x1b[4m' : ''; // Underline if highlighted (matching selected sound)
+          const formatted = isHovered 
+            ? `${bgHighlight}\x1b[38;5;${color}m${underline}${tag}\x1b[0m` 
+            : `\x1b[38;5;${color}m${underline}${tag}\x1b[0m`;
+          const visibleLength = tag.length; // just the tag, no trailing space
+          tagData.push({ formatted, visibleLength, tag });
+        }
+      }
+      
+      // Calculate total tags length (with leading space if tags exist)
+      // Format: " tag1 tag2 tag3" (leading space + tags joined with spaces, no trailing space)
+      let tagsVisibleLength = 0;
+      if (tagData.length > 0) {
+        tagsVisibleLength = 1 + tagData.reduce((sum, t) => sum + t.visibleLength, 0) + (tagData.length - 1);
+        // 1 for leading space + sum of tag lengths + (n-1) spaces between tags
+      }
+      
+      let tagsFormatted = '';
+      let urlFormatted = '';
+      
+      // Minimum space reserved for URL
+      const minUrlLength = 15; // Shortened since we're showing just the ID now
+      
+      // Check if tags + URL fit in available space
+      const urlVisibleLength = urlToDisplay.length;
+      
+      if (tagsVisibleLength + urlVisibleLength > remainingWidth) {
+        // Need to truncate something
+        if (tagsVisibleLength + minUrlLength > remainingWidth) {
+          // Tags take too much space, truncate tags
+          const availableForTags = Math.max(0, remainingWidth - minUrlLength);
+          let usedLength = 1; // start with leading space
+          const truncatedTags = [];
+          
+          for (let i = 0; i < tagData.length; i++) {
+            const tag = tagData[i];
+            const needSpace = i > 0 ? 1 : 0; // space before tag (except first)
+            const totalNeeded = usedLength + needSpace + tag.visibleLength;
+            
+            if (totalNeeded + 2 <= availableForTags) { // +2 for " …"
+              truncatedTags.push(tag.formatted);
+              usedLength += needSpace + tag.visibleLength;
+            } else {
+              break;
+            }
+          }
+          
+          if (truncatedTags.length > 0) {
+            tagsFormatted = ' ' + truncatedTags.join(' ') + ' \x1b[38;5;240m…\x1b[0m';
+            tagsVisibleLength = usedLength + 2; // +2 for " …"
+          } else {
+            tagsFormatted = '';
+            tagsVisibleLength = 0;
+          }
+        } else {
+          // Tags fit, keep them all
+          if (tagData.length > 0) {
+            tagsFormatted = ' ' + tagData.map(t => t.formatted).join(' ');
+          }
+        }
+        
+        // Truncate URL to fit remaining space
+        const availableForUrl = remainingWidth - tagsVisibleLength;
+        if (availableForUrl > 3) {
+          const truncatedUrl = '…' + urlToDisplay.slice(-(availableForUrl - 1));
+          urlFormatted = `${urlColor}${urlUnderline}${truncatedUrl}${reset}`;
+        } else {
+          urlFormatted = `${urlColor}${urlUnderline}…${reset}`;
+        }
+      } else {
+        // Everything fits
+        if (tagData.length > 0) {
+          tagsFormatted = ' ' + tagData.map(t => t.formatted).join(' ');
+        }
+        urlFormatted = `${urlColor}${urlUnderline}${urlToDisplay}${reset}`;
+      }
+      
+      // Build final output line - MUST be exactly termWidth visible characters
+      // Layout: indent + name + tags + [spacing to push URL to right] + URL + rightMargin
+      const rightMargin = 2; // Space before right edge
+      const urlVisibleLen = getVisibleLength(urlFormatted);
+      
+      // Calculate spacing to right-align the URL
+      const usedSpace = indentLength + nameWidth + tagsVisibleLength + urlVisibleLen + rightMargin;
+      const middleSpacing = ' '.repeat(Math.max(1, termWidth - usedSpace));
+      
+      let outputLine;
+      if (isSelected) {
+        // Apply background only to name (before tags), tags and URL render normally
+        const bgHighlight = '\x1b[48;5;235m';
+        const bgReset = '\x1b[0m';
+        outputLine = `${line.indent}${bgHighlight}${namePadded}${bgReset}${tagsFormatted}${middleSpacing}${urlFormatted}`;
+      } else {
+        outputLine = `${line.indent}${namePadded}${tagsFormatted}${middleSpacing}${urlFormatted}`;
+      }
+      
+      // Pad to full width to ensure we clear old content
+      const actualVisibleLen = indentLength + nameWidth + tagsVisibleLength + middleSpacing.length + urlVisibleLen;
+      const finalPadding = ' '.repeat(Math.max(0, termWidth - actualVisibleLen));
+      outputLine += finalPadding;
+      
+      // DEBUG: Log ALL sounds to see if any have tags
+      if (line.name === 'blocker') {
+        appendFileSync('/tmp/browse-debug.log', 
+          `BLOCKER DEBUG:\n` +
+          `  tags: ${JSON.stringify(line.soundTags)}\n` +
+          `  urlVisibleLength: ${urlVisibleLength}\n` +
+          `  tagsVisibleLength: ${tagsVisibleLength}\n` +
+          `  remainingWidth: ${remainingWidth}\n` +
+          `  tagsVisibleLength + urlVisibleLength = ${tagsVisibleLength + urlVisibleLength}\n` +
+          `  Does it fit? ${tagsVisibleLength + urlVisibleLength <= remainingWidth}\n` +
+          `  tagsFormatted: "${tagsFormatted}"\n`
+        );
+      }
+      
+      console.log(outputLine);
+    } else if (line.type === 'tag-result') {
+      const tagIcon = '🏷 ';
+      const tagText = `${tagIcon}${line.tag}`;
+      const tagColor = tagColorMap[line.tag];
+      const color = tagColor ? tagColor.bright : 99;
+      const availableWidth = termWidth - pickerWidth;
+      
+      if (isSelected) {
+        const outputLine = `${line.indent}\x1b[48;5;235m\x1b[38;5;${color}m${tagText.padEnd(25)}${reset}  \x1b[38;5;240m(select to filter by this tag)${reset}`;
+        console.log(ensureSingleLine(outputLine, availableWidth));
+      } else {
+        const outputLine = `${line.indent}\x1b[38;5;${color}m${tagText}${reset}`;
+        console.log(ensureSingleLine(outputLine, availableWidth));
+      }
+    } else if (line.type === 'category') {
+      const countColor = '\x1b[38;5;240m';
+      const availableWidth = termWidth - pickerWidth;
+      const padding = ' '.repeat(Math.max(0, availableWidth - line.text.length - line.count.length - 1));
+      
+      if (isSelected) {
+        console.log(`\x1b[48;5;235m${line.text}${padding}${countColor}${line.count}${reset}`);
+      } else {
+        console.log(`${line.text}${padding}${countColor}${line.count}${reset}`);
+      }
+    } else if (line.type === 'config') {
+      const valueColor = '\x1b[38;5;240m';
+      const availableWidth = termWidth - pickerWidth;
+      const padding = ' '.repeat(Math.max(0, availableWidth - getVisibleLength(line.text + ' ' + line.value)));
+      console.log(`${line.color}${line.text} ${valueColor}${line.value}${reset}${padding}`);
+    } else if (line.type === 'tag-bar') {
+      const bgHighlight = '\x1b[48;5;235m';
+      const availableWidth = termWidth - pickerWidth;
+      
+      // Virtualize the tag bar - build all lines in memory first
+      // Target: each line is exactly availableWidth visible characters
+      // Format: leftMargin (2 spaces) + content + padding = availableWidth
+      const leftMargin = '  '; // 2 spaces
+      const minRightMargin = 1; // At least 1 space on the right
+      const maxContentWidth = availableWidth - leftMargin.length - minRightMargin;
+      
+      const tagBarLines = [];
+      let currentLineContent = ''; // Content without margins
+      let currentLineVisible = 0;
+      
+      // Helper to finish a line and start a new one
+      const finishLine = () => {
+        if (currentLineContent.length > 0) {
+          // Pad the full line to exactly availableWidth
+          const fullLineVisible = leftMargin.length + currentLineVisible;
+          const paddingNeeded = availableWidth - fullLineVisible;
+          const padding = ' '.repeat(Math.max(0, paddingNeeded));
+          tagBarLines.push(leftMargin + currentLineContent + padding);
+        }
+      };
+      
+      // Start first line with "Tags: [*]" or "Tags: *"
+      const headerText = 'Tags: ';
+      currentLineContent += headerText;
+      currentLineVisible += headerText.length;
+      
+      const allSelected = state.selectedTagIndex === -1;
+      const allHovered = state.hoveredNavbarTagIndex === -1;
+      
+      let starText;
+      let starVisibleLength;
+      if (allSelected) {
+        starText = `${bgHighlight}\x1b[1m[*]${reset}`;
+        starVisibleLength = 3; // [*]
+      } else if (allHovered) {
+        starText = `${bgHighlight}\x1b[2m*${reset}`;
+        starVisibleLength = 1; // *
+      } else {
+        starText = `\x1b[2m*${reset}`;
+        starVisibleLength = 1; // *
+      }
+      
+      currentLineContent += starText + '  ';
+      currentLineVisible += starVisibleLength + 2; // star + 2 spaces
+      
+      // Add all tags, wrapping when needed
+      for (let i = 0; i < line.tagItems.length; i++) {
+        const tag = line.tagItems[i];
+        const colors = tagColorMap[tag];
+        const isSelectedFilter = state.selectedTagIndex === i;
+        const isHighlighted = state.selectedTags.includes(tag);
+        const isHovered = state.hoveredNavbarTagIndex === i;
+        
+        const useBright = isSelectedFilter || isHighlighted;
+        const color = useBright ? colors.bright : colors.dim;
+        
+        let tagText;
+        let tagVisibleLength;
+        if (isSelectedFilter) {
+          tagText = `${bgHighlight}\x1b[38;5;${color}m[${tag}]${reset}`;
+          tagVisibleLength = tag.length + 2; // [tag]
+        } else if (isHovered) {
+          tagText = `${bgHighlight}\x1b[38;5;${color}m${tag}${reset}`;
+          tagVisibleLength = tag.length;
+        } else {
+          tagText = `\x1b[38;5;${color}m${tag}${reset}`;
+          tagVisibleLength = tag.length;
+        }
+        
+        const totalTagLength = tagVisibleLength + 2; // tag + 2 trailing spaces
+        
+        // Check if adding this tag would exceed max content width
+        if (currentLineVisible + totalTagLength > maxContentWidth) {
+          // Current line is full, finish it and start a new one
+          finishLine();
+          
+          // Start new line with just this tag
+          currentLineContent = tagText + '  ';
+          currentLineVisible = totalTagLength;
+        } else {
+          // Add to current line
+          currentLineContent += tagText + '  ';
+          currentLineVisible += totalTagLength;
+        }
+      }
+      
+      // Finish the last line
+      finishLine();
+      
+      // Output all lines - they are guaranteed to be exactly availableWidth wide
+      tagBarLines.forEach(l => console.log(l));
+    } else if (line.type === 'separator') {
+      process.stdout.write('\x1b[2K\n'); // Clear line for separator
+    } else {
+      const availableWidth = termWidth - pickerWidth;
+      const outputLine = `${line.color}${line.text}${reset}`;
+      // Pad to full width to clear any old content
+      const visibleLen = getVisibleLength(outputLine);
+      const padding = ' '.repeat(Math.max(0, availableWidth - visibleLen));
+      console.log(outputLine + padding);
+    }
+  }
+  
+  // Build display lines
+  function buildLines() {
+    const lines = [];
+    const indent = '  '; // Left padding for all content
+    const termWidth = process.stdout.columns || 80;
+    const reset = '\x1b[0m';
+    
+    // Get filtered sound list first (we need the count for the header)
+    let soundList = sounds;
+    let displayItems = []; // Will contain both sounds and tag results
+    
+    // If we have a search query, search globally and include matching tags
+    if (state.searchQuery) {
+      const query = state.searchQuery.toLowerCase();
+      
+      // Search all sounds by name only (ignore current tag filter during search)
+      const matchingSounds = sounds.filter(sound => 
+        sound.name.toLowerCase().includes(query) ||
+        sound.id.toLowerCase().includes(query)
+      );
+      
+      // Search for matching tags by tag name
+      const matchingTags = allTags.filter(tag => tag.toLowerCase().includes(query));
+      
+      // Combine sounds and tags, mark them as different types
+      const soundItems = matchingSounds.map(sound => ({ type: 'sound', data: sound }));
+      const tagItems = matchingTags.map(tag => ({ type: 'tag', data: tag }));
+      
+      // Merge and sort alphabetically
+      displayItems = [...soundItems, ...tagItems].sort((a, b) => {
+        const aName = a.type === 'sound' ? a.data.name : a.data;
+        const bName = b.type === 'sound' ? b.data.name : b.data;
+        return aName.localeCompare(bName);
+      });
+      
+      // Save for when exiting search mode
+      if (!state.searchMode) {
+        displayItems = state.searchResults;
+      } else {
+        state.searchResults = displayItems;
+      }
+    } else {
+      // No search - filter by selected tag normally
+      if (state.selectedTagIndex >= 0) {
+        const selectedTag = allTags[state.selectedTagIndex];
+        soundList = soundList.filter(s => s.tags && s.tags.includes(selectedTag));
+      }
+      
+      // Sort alphabetically
+      soundList = [...soundList].sort((a, b) => a.name.localeCompare(b.name));
+      displayItems = soundList.map(sound => ({ type: 'sound', data: sound }));
+    }
+    
+    // Display items (sounds and tags)
+    for (const item of displayItems) {
+      if (item.type === 'sound') {
+        const sound = item.data;
+        const playIcon = state.playingSound === sound.id ? '▶ ' : '  ';
+        const soundTags = sound.tags ? [...sound.tags] : []; // Keep original order (by confidence)
+        
+        // Extract just the ID from notificationsounds.com URLs
+        // Format: https://notificationsounds.com/storage/sounds/file-sounds-775-alarma.ogg
+        // Display: 775-alarma.ogg
+        let displayUrl = sound.url;
+        const match = sound.url.match(/file-sounds-(.+\.ogg)$/);
+        if (match) {
+          displayUrl = match[1]; // Just the ID part
+        }
+        
+        lines.push({
+          type: 'sound',
+          playIcon,
+          name: sound.name,
+          soundTags,
+          url: sound.url, // Full URL for opening
+          displayUrl, // Shortened URL for display
+          indent: `${indent}`,
+          color: '\x1b[0m',
+          sound
+        });
+      } else if (item.type === 'tag') {
+        const tag = item.data;
+        lines.push({
+          type: 'tag-result',
+          tag,
+          indent: `${indent}`,
+          color: '\x1b[0m'
+        });
+      }
+    }
+    
+    // Now build the header with sound count
+    // Count sounds in displayItems (exclude tag-result items)
+    const filteredSoundCount = displayItems.filter(item => item.type === 'sound').length;
+    const totalSoundCount = sounds.length;
+    const countText = `[${filteredSoundCount}/${totalSoundCount}]`;
+    const countColor = '\x1b[38;5;240m'; // dim gray
+    
+    const headerTitleText = 'OpenCode Boops';
+    const headerTitleColor = '\x1b[38;5;110m'; // dark soft blue (steel blue)
+    const headerTitle = `${indent}${headerTitleColor}${headerTitleText}${reset}`;
+    const githubUrl = 'https://github.com/towc/opencode-plugin-boops';
+    const githubColor = '\x1b[38;5;237m'; // same gray as URLs
+    const rightMargin = 1; // Space before right edge
+    
+    // Build header with count and optionally GitHub URL
+    // Format: "  OpenCode Boops [N/M]   ...spacing...   github-url "
+    const headerTitleWithCount = `${headerTitle} ${countColor}${countText}${reset}`;
+    const headerTitleVisibleLen = indent.length + headerTitleText.length + 1 + countText.length; // indent + title + space + count
+    
+    const minSpacing = 3; // minimum spaces between title+count and link
+    const headerWithLink = termWidth >= headerTitleVisibleLen + minSpacing + githubUrl.length + rightMargin;
+    
+    let headerText;
+    if (headerWithLink) {
+      const spacing = ' '.repeat(termWidth - headerTitleVisibleLen - githubUrl.length - rightMargin);
+      const githubLink = makeHyperlink(githubUrl, `${githubColor}${githubUrl}${reset}`);
+      headerText = `${headerTitleWithCount}${spacing}${githubLink}`;
+    } else {
+      headerText = headerTitleWithCount;
+    }
+    
+    // Insert header at the beginning
+    lines.unshift({ type: 'separator', text: '' }); // separator before tag bar
+    lines.unshift({ 
+      type: 'tag-bar',
+      tagItems: allTags
+    }); // tag bar
+    lines.unshift({ type: 'separator', text: '' }); // separator after header
+    lines.unshift({ type: 'header', text: headerText, color: '\x1b[0m' }); // header (color already in text)
+    
+    return lines;
+  }
+  
+  // Render event picker mode
+  function renderPicker() {
+    const termHeight = process.stdout.rows || 24;
+    const termWidth = process.stdout.columns || 80;
+    const config = loadCurrentConfig();
+    
+    process.stdout.write('\x1b[H'); // Move cursor to home without clearing
+    process.stdout.write('\x1b[?25l'); // Hide cursor
+    
+    // Header
+    console.log('  \x1b[1mSelect Event Hook for: ' + state.pickerSound.name + '\x1b[0m');
+    console.log('');
+    
+    // Instructions
+    if (PLUGIN_INSTALLED) {
+      console.log('  \x1b[38;5;240m↑/↓ navigate  Enter play current  Ctrl+S save & exit  ESC cancel\x1b[0m');
+    } else {
+      console.log('  \x1b[38;5;240m↑/↓ navigate  Enter play current  ESC cancel  \x1b[38;5;208m(save disabled - plugin not installed)\x1b[0m');
+    }
+    console.log('');
+    
+    // Event list with current assignments
+    // Layout: header(1) + blank(1) + instructions(1) + blank(1) + events(?) + separator(1) + footer(1)
+    // Fixed lines: 4 (top) + 2 (bottom) = 6
+    const fixedLines = 6;
+    const maxVisibleEvents = Math.max(1, termHeight - fixedLines);
+    const scrollOffset = Math.max(0, Math.min(state.pickerSelectedEvent - Math.floor(maxVisibleEvents / 2), availableEvents.length - maxVisibleEvents));
+    const endIndex = Math.min(scrollOffset + maxVisibleEvents, availableEvents.length);
+    
+    for (let i = scrollOffset; i < endIndex; i++) {
+      const event = availableEvents[i];
+      const isSelected = i === state.pickerSelectedEvent;
+      const currentSound = config.sounds ? config.sounds[event] : null;
+      
+      const selectionBg = isSelected ? '\x1b[48;5;235m' : '';
+      const reset = '\x1b[0m';
+      
+      let line = `  ${selectionBg}${event.padEnd(30)}${reset}`;
+      
+      if (currentSound) {
+        // Try to find the sound in our database
+        const soundEntry = sounds.find(s => s.id === currentSound || s.name === currentSound);
+        if (soundEntry && soundEntry.tags && soundEntry.tags.length > 0) {
+          const tagStr = soundEntry.tags.slice(0, 3).join(' ');
+          line += `  \x1b[38;5;240m${soundEntry.name} [${tagStr}]${reset}`;
+        } else {
+          line += `  \x1b[38;5;240m${currentSound}${reset}`;
+        }
+      } else {
+        line += `  \x1b[38;5;237m(not set)${reset}`;
+      }
+      
+      console.log(ensureSingleLine(line, termWidth));
+    }
+    
+    // Fill remaining space to push footer to bottom
+    const actualEventsShown = endIndex - scrollOffset;
+    // linesUsed: header(1) + blank(1) + instructions(1) + blank(1) + events + separator(1) + footer(1)
+    const linesUsed = 4 + actualEventsShown + 2;
+    const remaining = Math.max(0, termHeight - linesUsed);
+    
+    for (let i = 0; i < remaining; i++) {
+      process.stdout.write('\x1b[2K\n'); // Clear line
+    }
+    
+    // Footer (2 lines, but last line should not have trailing newline)
+    process.stdout.write('  ' + '─'.repeat(termWidth - 4) + '\n');
+    process.stdout.write('  \x1b[38;5;240mPress Ctrl+S to assign "' + state.pickerSound.name + '" to selected event\x1b[0m');
+    
+    // Clear from cursor to end of screen
+    process.stdout.write('\x1b[J');
+  }
+  
+  function render() {
+    const lines = buildLines();
+    const termHeight = process.stdout.rows || 24;
+    const termWidth = process.stdout.columns || 80;
+    
+    // Calculate picker box width (0 if not in picker mode)
+    const pickerWidth = state.pickerMode ? Math.min(40, Math.floor(termWidth * 0.4)) : 0;
+    
+    // Calculate how many lines the tag bar will take (matching render logic EXACTLY)
+    const tagBarLine = lines.find(l => l.type === 'tag-bar');
+    let tagBarLineCount = 1;
+    if (tagBarLine) {
+      // Simulate EXACTLY the same wrapping logic as renderLine for tag-bar
+      const maxContentWidth = termWidth - 2 - 1; // leftMargin(2) + minRightMargin(1)
+      
+      // Start with "Tags: [*]  " or "Tags: *  "
+      const headerText = 'Tags: ';
+      let currentLineVisible = headerText.length;
+      
+      const allSelected = state.selectedTagIndex === -1;
+      const starVisibleLength = allSelected ? 3 : 1; // [*] or *
+      currentLineVisible += starVisibleLength + 2; // star + 2 spaces
+      
+      let lineCount = 1;
+      
+      for (let i = 0; i < tagBarLine.tagItems.length; i++) {
+        const tag = tagBarLine.tagItems[i];
+        const isSelectedFilter = state.selectedTagIndex === i;
+        const isHighlighted = state.selectedTags.includes(tag);
+        const isHovered = state.hoveredNavbarTagIndex === i;
+        
+        let tagVisibleLength;
+        if (isSelectedFilter) {
+          tagVisibleLength = tag.length + 2; // [tag]
+        } else {
+          tagVisibleLength = tag.length;
+        }
+        
+        const totalTagLength = tagVisibleLength + 2; // tag + 2 trailing spaces
+        
+        if (currentLineVisible + totalTagLength > maxContentWidth) {
+          // Would wrap to new line
+          lineCount++;
+          currentLineVisible = totalTagLength;
+        } else {
+          currentLineVisible += totalTagLength;
+        }
+      }
+      
+      tagBarLineCount = lineCount;
+    }
+    
+    // Sticky header/tag bar for tall terminals
+    const stickyNavbar = termHeight >= 40;
+    const contentStartIndex = 4; // Header, sep, tagbar, sep are first 4 items
+    
+    // Calculate available lines for sound items
+    // Footer section always takes: separator line(1) + controls(1) + blank line(1) = 3 lines
+    // Top blank line: 1 line
+    const fixedFooterLines = 3;
+    const topBlankLine = 1;
+    
+    let availableContentLines;
+    if (stickyNavbar) {
+      // In sticky mode: header/tagbar are always visible (not part of scrollable area)
+      // Fixed header takes: blank(1) + header(1) + sep(1) + tag-bar(tagBarLineCount) + sep(1)
+      const fixedHeaderLines = topBlankLine + 2 + tagBarLineCount + 1;
+      availableContentLines = termHeight - fixedHeaderLines - fixedFooterLines;
+    } else {
+      // In normal mode: everything scrolls together, so header counts against content
+      const fixedHeaderLines = 2 + tagBarLineCount + 1;
+      availableContentLines = termHeight - topBlankLine - fixedFooterLines;
+    }
+    
+    const visibleLines = availableContentLines;
+    
+    // Update selected tags for highlighting
+    const selectedLine = lines[state.selectedLine];
+    if (selectedLine?.type === 'sound' && selectedLine.soundTags) {
+      state.selectedTags = selectedLine.soundTags;
+    } else {
+      state.selectedTags = [];
+    }
+    
+    // Adjust scroll to keep selection visible
+    if (state.selectedLine < state.scrollOffset) {
+      state.scrollOffset = state.selectedLine;
+    }
+    if (state.selectedLine >= state.scrollOffset + visibleLines) {
+      state.scrollOffset = state.selectedLine - visibleLines + 1;
+    }
+    
+    // In sticky mode, never scroll above the content start
+    if (stickyNavbar && state.scrollOffset < contentStartIndex) {
+      state.scrollOffset = contentStartIndex;
+    }
+    
+
+    
+    // Move cursor to home position (top-left) without clearing
+    // (clearing causes flicker; we'll overwrite old content)
+    process.stdout.write('\x1b[H');
+    
+    // DEBUG: Count lines as we output
+    let actualLinesOutput = 0;
+    let debugLog = '';
+    const origConsoleLog = console.log;
+    console.log = function(...args) {
+      actualLinesOutput++;
+      debugLog += `console.log #${actualLinesOutput}\n`;
+      return origConsoleLog.apply(console, args);
+    };
+    
+    // Hide cursor during render, will show it at the end if in search mode
+    process.stdout.write('\x1b[?25l');
+    
+    let start, end;
+    
+    // Add blank line at the top
+    process.stdout.write('\x1b[2K\n');
+    
+    if (stickyNavbar) {
+      // Always show header/tagbar, scroll only content
+      // Render header (lines 0-3)
+      for (let i = 0; i < contentStartIndex; i++) {
+        if (i < lines.length) {
+          renderLine(lines[i], i === state.selectedLine, termWidth, i, pickerWidth);
+        }
+      }
+      
+      // Check if we need scroll indicators
+      const needsTopIndicator = state.scrollOffset > contentStartIndex;
+      const potentialEnd = Math.max(contentStartIndex, state.scrollOffset) + visibleLines;
+      const needsBottomIndicator = potentialEnd < lines.length;
+      
+      // Calculate how many content lines we can show (reserve space for indicators)
+      let availableForContent = visibleLines;
+      if (needsTopIndicator) availableForContent--;
+      if (needsBottomIndicator) availableForContent--;
+      
+      // Show top scroll indicator if needed
+      if (needsTopIndicator) {
+        const indicator = '\x1b[38;5;240m  ...\x1b[0m';
+        const padding = ' '.repeat(Math.max(0, termWidth - 5)); // 5 = 2 spaces + 3 dots
+        console.log(indicator + padding);
+      }
+      
+      // Render scrollable content
+      start = Math.max(contentStartIndex, state.scrollOffset);
+      end = Math.min(start + availableForContent, lines.length);
+    } else {
+      // Normal mode: scroll everything including header/tagbar
+      // Check if we need scroll indicators
+      const needsTopIndicator = state.scrollOffset > 0;
+      const potentialEnd = state.scrollOffset + visibleLines;
+      const needsBottomIndicator = potentialEnd < lines.length;
+      
+      // Calculate how many content lines we can show (reserve space for indicators)
+      let availableForContent = visibleLines;
+      if (needsTopIndicator) availableForContent--;
+      if (needsBottomIndicator) availableForContent--;
+      
+      // Show top scroll indicator if needed
+      if (needsTopIndicator) {
+        const indicator = '\x1b[38;5;240m  ...\x1b[0m';
+        const padding = ' '.repeat(Math.max(0, termWidth - 5)); // 5 = 2 spaces + 3 dots
+        console.log(indicator + padding);
+      }
+      
+      start = state.scrollOffset;
+      end = Math.min(start + availableForContent, lines.length);
+    }
+    
+    for (let i = start; i < end; i++) {
+      const line = lines[i];
+      const isSelected = i === state.selectedLine && (line.type === 'category' || line.type === 'sound' || line.type === 'tag-result');
+      renderLine(line, isSelected, termWidth, i, pickerWidth);
+    }
+    
+    // Show scroll indicator if there's content below
+    if (end < lines.length) {
+      const indicator = '\x1b[38;5;240m  ...\x1b[0m';
+      const padding = ' '.repeat(Math.max(0, termWidth - 5)); // 5 = 2 spaces + 3 dots
+      console.log(indicator + padding);
+    }
+    
+    // Fill remaining vertical space to push controls to bottom
+    // Count what we actually rendered
+    const hasTopIndicator = (stickyNavbar && state.scrollOffset > contentStartIndex) || 
+                            (!stickyNavbar && state.scrollOffset > 0);
+    const hasBottomIndicator = end < lines.length;
+    const contentLinesRendered = end - start;
+    const indicatorsRendered = (hasTopIndicator ? 1 : 0) + (hasBottomIndicator ? 1 : 0);
+    
+    let totalRendered;
+    if (stickyNavbar) {
+      // In sticky mode, we rendered: header(4 lines) + content + indicators
+      // But visibleLines only counts content area, so don't include header
+      totalRendered = contentLinesRendered + indicatorsRendered;
+    } else {
+      // In normal mode, content includes everything
+      totalRendered = contentLinesRendered + indicatorsRendered;
+    }
+    
+    // Fill the rest to keep footer at bottom
+    const remainingLines = visibleLines - totalRendered;
+    const clearLine = '\x1b[2K'; // Clear entire line
+    
+    for (let i = 0; i < remainingLines; i++) {
+      process.stdout.write(clearLine + '\n');
+    }
+    
+    // Draw picker box overlay if in picker mode
+    if (state.pickerMode && state.pickerSound) {
+      const config = loadCurrentConfig();
+      const boxX = termWidth - pickerWidth;
+      const boxStartY = stickyNavbar ? (topBlankLine + 4) : (topBlankLine + 1); // Start below header in sticky mode, else near top
+      const boxHeight = Math.min(availableEvents.length + 4, termHeight - boxStartY - fixedFooterLines);
+      
+      // Calculate scroll offset for event list
+      const maxVisibleEvents = boxHeight - 4; // Reserve space for header(2) + footer(2)
+      const eventScrollOffset = Math.max(0, Math.min(state.pickerSelectedEvent - Math.floor(maxVisibleEvents / 2), availableEvents.length - maxVisibleEvents));
+      const eventEndIndex = Math.min(eventScrollOffset + maxVisibleEvents, availableEvents.length);
+      
+      // Draw each line of the picker box
+      for (let row = 0; row < boxHeight; row++) {
+        const screenY = boxStartY + row;
+        process.stdout.write(`\x1b[${screenY};${boxX}H`); // Position cursor
+        
+        if (row === 0) {
+          // Top border with title
+          const title = ` Assign to Event `;
+          const titleStart = Math.floor((pickerWidth - title.length) / 2);
+          const leftBorder = '┌' + '─'.repeat(titleStart - 1);
+          const rightBorder = '─'.repeat(pickerWidth - titleStart - title.length - 1) + '┐';
+          process.stdout.write(`\x1b[38;5;240m${leftBorder}\x1b[0m${title}\x1b[38;5;240m${rightBorder}\x1b[0m`);
+        } else if (row === 1) {
+          // Sound name
+          const soundName = state.pickerSound.name.length > pickerWidth - 4 
+            ? state.pickerSound.name.slice(0, pickerWidth - 7) + '...' 
+            : state.pickerSound.name;
+          const padding = ' '.repeat(Math.max(0, pickerWidth - soundName.length - 4));
+          process.stdout.write(`\x1b[38;5;240m│\x1b[0m \x1b[1m${soundName}\x1b[0m${padding} \x1b[38;5;240m│\x1b[0m`);
+        } else if (row === 2) {
+          // Separator
+          process.stdout.write(`\x1b[38;5;240m├${'─'.repeat(pickerWidth - 2)}┤\x1b[0m`);
+        } else if (row === boxHeight - 1) {
+          // Bottom border
+          process.stdout.write(`\x1b[38;5;240m└${'─'.repeat(pickerWidth - 2)}┘\x1b[0m`);
+        } else {
+          // Event list item
+          const eventIndex = eventScrollOffset + (row - 3);
+          if (eventIndex < eventEndIndex) {
+            const event = availableEvents[eventIndex];
+            const isSelected = eventIndex === state.pickerSelectedEvent;
+            const currentSound = config.sounds ? config.sounds[event] : null;
+            
+            const bg = isSelected ? '\x1b[48;5;235m' : '';
+            const eventText = event.length > pickerWidth - 6 
+              ? event.slice(0, pickerWidth - 9) + '...' 
+              : event.padEnd(pickerWidth - 6);
+            
+            const indicator = currentSound ? '•' : ' ';
+            const indicatorColor = currentSound ? '\x1b[38;5;76m' : '';
+            
+            process.stdout.write(`\x1b[38;5;240m│\x1b[0m${bg}${indicatorColor}${indicator}\x1b[0m${bg} ${eventText} \x1b[0m\x1b[38;5;240m│\x1b[0m`);
+          } else {
+            // Empty line
+            process.stdout.write(`\x1b[38;5;240m│${' '.repeat(pickerWidth - 2)}│\x1b[0m`);
+          }
+        }
+      }
+      
+      // Move cursor back to the start of footer line (after all content + fill)
+      // The cursor should be at the line where we want to draw the footer
+      // We don't need to reposition since we drew the picker with absolute positioning
+    }
+    
+    // Controls footer (2 lines, no trailing newline)
+    const sep = '─'.repeat(termWidth);
+    process.stdout.write(`\x1b[38;5;240m${sep}\x1b[0m\n`);
+    
+    if (state.searchQuery || state.searchMode) {
+      // Search mode: show search box on left, hints on right
+      const searchBox = ` /${state.searchQuery}`;
+      const searchHint = '\x1b[38;5;240m/ to refine  esc to clear\x1b[0m';
+      const searchBoxVisible = 2 + state.searchQuery.length; // " /" + query
+      const hintVisible = getVisibleLength(searchHint);
+      
+      // Calculate spacing to push hint to the right
+      const spacing = ' '.repeat(Math.max(1, termWidth - searchBoxVisible - hintVisible - 1));
+      
+      if (state.searchMode) {
+        // Actively typing: write the line and position cursor
+        process.stdout.write(searchBox);
+        const cursorPos = searchBoxVisible; // Current cursor position after searchBox
+        process.stdout.write(spacing + searchHint);
+        
+        // Save cursor position
+        process.stdout.write('\x1b[s');
+        
+        // Write blank line and clear rest of screen
+        process.stdout.write('\n\x1b[2K');
+        process.stdout.write('\x1b[J');
+        
+        // Restore cursor position and move to after search query
+        process.stdout.write('\x1b[u');
+        const moveBack = spacing.length + hintVisible;
+        process.stdout.write(`\x1b[${moveBack}D`); // Move cursor left
+        process.stdout.write('\x1b[?25h'); // Show cursor
+      } else {
+        // Viewing results: just write the line, no cursor
+        process.stdout.write(searchBox + spacing + searchHint);
+        
+        // Add blank line at the bottom
+        process.stdout.write('\n\x1b[2K');
+        
+        // Clear from cursor to end of screen to remove any leftover content
+        process.stdout.write('\x1b[J');
+      }
+    } else {
+      // Normal mode or picker mode: show controls with attribution
+      let controls;
+      if (state.pickerMode) {
+        controls = PLUGIN_INSTALLED 
+          ? ' \x1b[38;5;240m↑/↓ select event  enter play  ctrl+s save  ←/esc close\x1b[0m'
+          : ' \x1b[38;5;240m↑/↓ select event  enter play  ←/esc close  \x1b[38;5;208m(save disabled)\x1b[0m';
+      } else {
+        controls = ' \x1b[38;5;240m↑/↓ navigate  ←/→ tags  / search  s assign  enter play  q quit\x1b[0m';
+      }
+      
+      // Attribution with manual hover/click
+      const attributionText = 'Sounds from notificationsounds.com';
+      const attributionUrl = 'https://notificationsounds.com';
+      const attributionColor = state.hoveredAttribution ? '\x1b[38;5;75m' : '\x1b[38;5;237m'; // bright blue on hover, dim gray normally
+      const attributionUnderline = state.hoveredAttribution ? '\x1b[4m' : ''; // Underline only on hover
+      const attribution = `${attributionColor}${attributionUnderline}${attributionText}\x1b[0m`;
+      
+      const controlsVisible = getVisibleLength(controls);
+      const attributionVisible = attributionText.length;
+      
+      // Check if we have space for attribution
+      if (termWidth >= controlsVisible + attributionVisible + 3) {
+        const spacing = ' '.repeat(termWidth - controlsVisible - attributionVisible - 1);
+        process.stdout.write(controls + spacing + attribution);
+      } else {
+        process.stdout.write(controls);
+      }
+      
+      // Add blank line at the bottom
+      process.stdout.write('\n\x1b[2K');
+      
+      // Clear from cursor to end of screen to remove any leftover content
+      process.stdout.write('\x1b[J');
+    }
+    
+    // DEBUG: Restore and report
+    console.log = origConsoleLog;
+    appendFileSync('/tmp/browse-debug.log', 
+      `console.log calls: ${actualLinesOutput}, termHeight: ${termHeight}, difference: ${actualLinesOutput - termHeight}\n` +
+      `Expected: header(1) + sep(1) + tagbar(${tagBarLineCount}) + sep(1) + content + indicator + fill + footer(1) = ${termHeight}\n\n` +
+      debugLog
+    );
+  }
+  
+  // Set up raw mode for keyboard input
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdin.setEncoding('utf8');
+  
+  // Use alternate screen buffer to preserve user's terminal
+  process.stdout.write('\x1b[?1049h'); // Enable alternate screen buffer
+  process.stdout.write('\x1b[2J');     // Clear alternate screen
+  process.stdout.write('\x1b[H');      // Move cursor to home
+  
+  // Enable mouse reporting
+  process.stdout.write('\x1b[?1000h'); // Enable mouse click events
+  process.stdout.write('\x1b[?1002h'); // Enable mouse drag events
+  process.stdout.write('\x1b[?1003h'); // Enable mouse movement tracking (hover)
+  process.stdout.write('\x1b[?1015h'); // Enable extended mouse mode
+  process.stdout.write('\x1b[?1006h'); // Enable SGR mouse mode
+
+  render();
+  
+  // Cleanup function to disable mouse and stop sound on exit
+  const cleanup = () => {
+    // Stop any currently playing sound
+    if (currentPlayingProcess) {
+      try {
+        currentPlayingProcess.kill();
+      } catch (e) {
+        // Ignore errors if process already stopped
+      }
+      currentPlayingProcess = null;
+    }
+    
+    // Disable mouse reporting
+    process.stdout.write('\x1b[?1000l');
+    process.stdout.write('\x1b[?1002l');
+    process.stdout.write('\x1b[?1003l');
+    process.stdout.write('\x1b[?1015l');
+    process.stdout.write('\x1b[?1006l');
+    
+    // Restore normal screen buffer
+    process.stdout.write('\x1b[?1049l');
+    
+    // Show cursor
+    process.stdout.write('\x1b[?25h');
+  };
+  
+  process.on('exit', cleanup);
+  process.on('SIGINT', () => {
+    cleanup();
+    process.exit(0);
+  });
+
+  // Handle keyboard input
+  process.stdin.on('data', async (key) => {
+    // Handle Ctrl+C always
+    if (key === '\u0003') {
+      process.exit(0);
+    }
+    
+    // Handle mouse events (SGR format: \x1b[<button;x;y;M/m)
+    const mouseMatch = key.match(/\x1b\[<(\d+);(\d+);(\d+)([Mm])/);
+    if (mouseMatch) {
+      const [, button, x, y, action] = mouseMatch;
+      const mouseX = parseInt(x) - 1; // Convert to 0-based
+      const mouseY = parseInt(y) - 1;
+      const isPress = action === 'M';
+      const buttonNum = parseInt(button);
+      
+      const lines = buildLines();
+      const termHeight = process.stdout.rows || 24;
+      const termWidth = process.stdout.columns || 80;
+      
+      // Calculate tag bar height (matching render logic exactly)
+      const tagBarLine = lines.find(l => l.type === 'tag-bar');
+      let tagBarLineCount = 1;
+      if (tagBarLine) {
+        let currentLineLength = getVisibleLength('  Tags: ') + (state.selectedTagIndex === -1 ? 4 : 3);
+        let lineCount = 1;
+        
+        for (let i = 0; i < tagBarLine.tagItems.length; i++) {
+          const tag = tagBarLine.tagItems[i];
+          const isSelectedFilter = state.selectedTagIndex === i;
+          const tagLength = isSelectedFilter ? tag.length + 4 : tag.length + 2;
+          
+          if (currentLineLength + tagLength > termWidth - 2) {
+            lineCount++;
+            currentLineLength = 2 + tagLength;
+          } else {
+            currentLineLength += tagLength;
+          }
+        }
+        
+        tagBarLineCount = lineCount;
+      }
+      
+      // Check if we're in sticky navbar mode
+      const stickyNavbar = termHeight >= 40;
+      const contentStartIndexInLines = 4; // Header, sep, tagbar, sep are first 4 items
+      
+      // Actual screen layout from render() (0-indexed Y positions):
+      // In normal mode:
+      //   - Y=0: blank line (padding)
+      //   - Y=1: optional top scroll indicator "..." (if scrollOffset > 0)
+      //   - Then: lines from scrollOffset onwards (header, tagbar, content all scroll together)
+      // In sticky navbar mode:
+      //   - Y=0: blank line (padding)
+      //   - Y=1-4: header, sep, tagbar (N lines), sep (always visible)
+      //   - Then: optional top scroll indicator "..." (if scrollOffset > contentStartIndexInLines)
+      //   - Then: content lines from scrollOffset onwards
+      
+      const topBlankLineOffset = 1; // Account for blank line at top
+      let currentY = topBlankLineOffset;
+      let contentStartY;
+      
+      if (stickyNavbar) {
+        // Sticky mode: header/tagbar always visible at top
+        // blank(1) + Header(1) + sep(1) + tagbar(N) + sep(1) = 1 + 2 + tagBarLineCount + 1
+        const headerHeight = 2 + tagBarLineCount + 1;
+        currentY = topBlankLineOffset + headerHeight;
+        
+        // Top indicator if scrolled past header
+        const hasTopIndicator = state.scrollOffset > contentStartIndexInLines;
+        if (hasTopIndicator) currentY++;
+        
+        contentStartY = currentY;
+      } else {
+        // Normal mode: everything scrolls together
+        const hasTopIndicator = state.scrollOffset > 0;
+        if (hasTopIndicator) currentY++;
+        
+        // On screen, content starts after: blank + top indicator + header + sep + tagbar + sep
+        contentStartY = currentY + 2 + tagBarLineCount + 1;
+      }
+      
+      if (mouseY < contentStartY) {
+        // Click/hover is in header/tag bar area
+        // Calculate tag bar position based on mode
+        let tagBarStartY, tagBarEndY;
+        if (stickyNavbar) {
+          // In sticky mode: Y=0 is blank, Y=1 is header, Y=2 is sep, Y=3+ is tag bar
+          tagBarStartY = topBlankLineOffset + 2;
+          tagBarEndY = topBlankLineOffset + 2 + tagBarLineCount;
+        } else {
+          // In normal mode: after blank line + optional top indicator, then header + sep
+          const topIndicatorLines = state.scrollOffset > 0 ? 1 : 0;
+          tagBarStartY = topBlankLineOffset + topIndicatorLines + 2; // blank + indicator + header + sep
+          tagBarEndY = tagBarStartY + tagBarLineCount;
+        }
+        
+        if (mouseY >= tagBarStartY && mouseY < tagBarEndY) {
+          // In tag bar - detect which tag was clicked/hovered
+          // Reconstruct tag positions
+          const tagBarY = mouseY - tagBarStartY;
+          let currentLine = 0;
+          let currentX = getVisibleLength('  Tags: ') + (state.selectedTagIndex === -1 ? 4 : 3);
+          let foundHover = false;
+          
+          for (let i = -1; i < allTags.length; i++) {
+            let tag, tagLength;
+            
+            if (i === -1) {
+              // The * tag
+              tag = null;
+              tagLength = 0; // Already counted in initial currentX
+              
+              if (currentLine === tagBarY) {
+                const startX = getVisibleLength('  Tags: ');
+                const endX = startX + (state.selectedTagIndex === -1 ? 4 : 3);
+                
+                if (mouseX >= startX && mouseX < endX) {
+                  // Clicked/hovered on * tag
+                  if (isPress && buttonNum === 0) {
+                    state.selectedTagIndex = -1;
+                    state.searchMode = false;
+                    state.searchQuery = '';
+                    state.searchResults = [];
+                    state.selectedLine = 0;
+                    state.targetSoundIndex = 0;
+                    render();
+                    return;
+                  } else if (buttonNum >= 32 && buttonNum <= 35) {
+                    // Hover
+                    if (state.hoveredNavbarTagIndex !== -1) {
+                      state.hoveredNavbarTagIndex = -1;
+                      render();
+                    }
+                    foundHover = true;
+                    return;
+                  }
+                }
+              }
+              continue;
+            }
+            
+            tag = allTags[i];
+            const isSelectedFilter = state.selectedTagIndex === i;
+            // Assume all tags take the same space (tag.length + 2) regardless of selection
+            // The brackets seem to be rendered within the allocated space, not adding to it
+            tagLength = tag.length + 2; // tag + 2 trailing spaces
+            
+            // Check if need to wrap
+            if (currentX + tagLength > termWidth - 2) {
+              currentLine++;
+              currentX = 2 + tagLength;
+            } else {
+              currentX += tagLength;
+            }
+            
+            // Check if this is the right line and position
+            if (currentLine === tagBarY) {
+              const tagStartX = currentX - tagLength;
+              const tagEndX = currentX;
+              
+              if (mouseX >= tagStartX && mouseX < tagEndX) {
+                // Clicked/hovered on this tag
+                if (isPress && buttonNum === 0) {
+                  // Click - switch to this tag
+                  state.selectedTagIndex = i;
+                  state.searchMode = false;
+                  state.searchQuery = '';
+                  state.searchResults = [];
+                  state.selectedLine = 0;
+                  state.targetSoundIndex = 0;
+                  render();
+                  return;
+                } else if (buttonNum >= 32 && buttonNum <= 35) {
+                  // Hover
+                  if (state.hoveredNavbarTagIndex !== i) {
+                    state.hoveredNavbarTagIndex = i;
+                    render();
+                  }
+                  foundHover = true;
+                  return;
+                }
+              }
+            }
+          }
+          
+          // If we're in the tag bar but not over any tag, clear hover
+          if (!foundHover && state.hoveredNavbarTagIndex !== null) {
+            state.hoveredNavbarTagIndex = null;
+            render();
+          }
+        } else {
+          // Not in tag bar area, clear navbar hover
+          if (state.hoveredNavbarTagIndex !== null) {
+            state.hoveredNavbarTagIndex = null;
+            render();
+          }
+        }
+        return;
+      }
+      
+      // Check if mouse is in footer area (last 2 lines: separator + controls)
+      // Footer is at: termHeight - 3 (separator line) and termHeight - 2 (controls line)
+      // Account for bottom blank line
+      const footerSeparatorY = termHeight - 3;
+      const footerControlsY = termHeight - 2;
+      
+      if (mouseY === footerControlsY && !state.searchMode) {
+        // Mouse is on the controls/attribution line
+        // Check if hovering over attribution link (on the right)
+        const controls = ' ↑/↓ navigate  ←/→ tags  / search  enter play  q quit';
+        const attributionText = 'Sounds from notificationsounds.com';
+        const controlsVisible = controls.length;
+        const attributionVisible = attributionText.length;
+        
+        if (termWidth >= controlsVisible + attributionVisible + 3) {
+          // Attribution is visible
+          const attributionStartX = termWidth - attributionVisible - 1;
+          const attributionEndX = termWidth - 1;
+          
+          if (mouseX >= attributionStartX && mouseX < attributionEndX) {
+            // Hovering/clicking on attribution
+            if (buttonNum >= 32 && buttonNum <= 35) {
+              // Mouse movement - hover
+              if (!state.hoveredAttribution) {
+                state.hoveredAttribution = true;
+                render();
+              }
+              return;
+            } else if (isPress && buttonNum === 0) {
+              // Left click - open link
+              const url = 'https://notificationsounds.com';
+              const openCmd = process.platform === 'darwin' ? 'open' : 
+                             process.platform === 'win32' ? 'start' : 'xdg-open';
+              exec(`${openCmd} ${url}`);
+              return;
+            }
+          } else {
+            // Not hovering over attribution
+            if (state.hoveredAttribution) {
+              state.hoveredAttribution = false;
+              render();
+            }
+          }
+        }
+      } else {
+        // Not on footer controls line
+        if (state.hoveredAttribution) {
+          state.hoveredAttribution = false;
+          render();
+        }
+      }
+      
+      // Mouse is in content area
+      // Calculate which line in the lines array is at this screen position
+      const contentRelativeY = mouseY - contentStartY;
+      
+      let hoveredLineIndex;
+      if (stickyNavbar) {
+        // In sticky mode, the first visible content line is at Math.max(contentStartIndexInLines, scrollOffset)
+        const firstVisibleContentIndex = Math.max(contentStartIndexInLines, state.scrollOffset);
+        hoveredLineIndex = firstVisibleContentIndex + contentRelativeY;
+      } else {
+        // In normal mode, scrollOffset tells us the first visible line (including header)
+        hoveredLineIndex = state.scrollOffset + contentRelativeY;
+      }
+      
+      // Mouse move/hover (button 32+modifier means movement)
+      if (buttonNum >= 32 && buttonNum <= 35) {
+        if (hoveredLineIndex >= 0 && hoveredLineIndex < lines.length) {
+          const hoveredLine = lines[hoveredLineIndex];
+          
+          // Only highlight interactive lines
+          if (hoveredLine.type === 'sound' || hoveredLine.type === 'tag-result') {
+            let needsRender = false;
+            
+            if (state.selectedLine !== hoveredLineIndex) {
+              state.selectedLine = hoveredLineIndex;
+              needsRender = true;
+              
+              // Update target index if it's a sound
+              if (hoveredLine.type === 'sound') {
+                const soundLines = lines.filter(l => l.type === 'sound');
+                const currentSoundIndex = soundLines.findIndex((_, idx) => {
+                  const soundLineIndex = lines.findIndex(l => l === soundLines[idx]);
+                  return soundLineIndex === state.selectedLine;
+                });
+                if (currentSoundIndex >= 0) {
+                  state.targetSoundIndex = currentSoundIndex;
+                }
+              }
+            }
+            
+            // Detect which tag is hovered (if any) on sound lines
+            if (hoveredLine.type === 'sound') {
+              const indent = 2;
+              const nameWidth = 25;
+              const tagsStartX = indent + nameWidth + 1; // +1 for leading space before tags
+              
+              let hoveredTag = null;
+              if (mouseX >= tagsStartX && hoveredLine.soundTags && hoveredLine.soundTags.length > 0) {
+                let tagX = tagsStartX;
+                for (const tag of hoveredLine.soundTags) {
+                  const tagLength = tag.length;
+                  if (mouseX >= tagX && mouseX < tagX + tagLength) {
+                    hoveredTag = tag;
+                    break;
+                  }
+                  tagX += tagLength + 1; // +1 for space between tags
+                }
+              }
+              
+              if (state.hoveredTag !== hoveredTag) {
+                state.hoveredTag = hoveredTag;
+                needsRender = true;
+              }
+              
+              // Detect if hovering over URL (on the right side)
+              const displayUrl = hoveredLine.displayUrl || hoveredLine.url;
+              const urlStartX = termWidth - displayUrl.length - 2; // -2 for right margin
+              const urlEndX = termWidth - 2;
+              
+              let hoveredUrl = null;
+              if (mouseX >= urlStartX && mouseX < urlEndX) {
+                hoveredUrl = hoveredLineIndex;
+              }
+              
+              if (state.hoveredUrl !== hoveredUrl) {
+                state.hoveredUrl = hoveredUrl;
+                needsRender = true;
+              }
+            } else {
+              if (state.hoveredTag !== null) {
+                state.hoveredTag = null;
+                needsRender = true;
+              }
+              if (state.hoveredUrl !== null) {
+                state.hoveredUrl = null;
+                needsRender = true;
+              }
+            }
+            
+            if (needsRender) {
+              render();
+            }
+          }
+        }
+        return;
+      }
+      
+      if (isPress) {
+        // Left click (button 0) - select and play sound, or activate tag
+        if (buttonNum === 0) {
+          const clickedLineIndex = hoveredLineIndex; // Use the same calculation as hover
+          if (clickedLineIndex >= 0 && clickedLineIndex < lines.length) {
+            const clickedLine = lines[clickedLineIndex];
+            
+            // Sound line - check if clicking on a tag or the sound itself
+            if (clickedLine.type === 'sound') {
+              state.selectedLine = clickedLineIndex;
+              
+              // Update target index
+              const soundLines = lines.filter(l => l.type === 'sound');
+              const currentSoundIndex = soundLines.findIndex((_, idx) => {
+                const soundLineIndex = lines.findIndex(l => l === soundLines[idx]);
+                return soundLineIndex === state.selectedLine;
+              });
+              if (currentSoundIndex >= 0) {
+                state.targetSoundIndex = currentSoundIndex;
+              }
+              
+              // Check if click is on a tag (approximate - tags start after name at position ~27)
+              const indent = 2;
+              const nameWidth = 25;
+              const tagsStartX = indent + nameWidth;
+              
+              // Check if click is on URL (on the right side)
+              const displayUrl = clickedLine.displayUrl || clickedLine.url;
+              const urlStartX = termWidth - displayUrl.length - 2; // -2 for right margin
+              const urlEndX = termWidth - 2;
+              
+              if (mouseX >= urlStartX && mouseX < urlEndX) {
+                // Clicked on URL - open it in browser
+                const url = clickedLine.url; // Use full URL, not displayUrl
+                const openCmd = process.platform === 'darwin' ? 'open' : 
+                               process.platform === 'win32' ? 'start' : 'xdg-open';
+                exec(`${openCmd} "${url}"`);
+                return;
+              }
+              
+              if (mouseX >= tagsStartX && clickedLine.soundTags && clickedLine.soundTags.length > 0) {
+                // Clicked in tag area - calculate which tag
+                let tagX = tagsStartX + 1; // +1 for leading space
+                for (const tag of clickedLine.soundTags) {
+                  const tagLength = tag.length + 1; // tag + space
+                  if (mouseX >= tagX && mouseX < tagX + tagLength) {
+                    // Clicked on this tag - switch to it
+                    const tagIndex = allTags.indexOf(tag);
+                    if (tagIndex >= 0) {
+                      state.selectedTagIndex = tagIndex;
+                      state.searchMode = false;
+                      state.searchQuery = '';
+                      state.searchResults = [];
+                      state.selectedLine = 0;
+                      state.targetSoundIndex = 0;
+                      render();
+                      return;
+                    }
+                  }
+                  tagX += tagLength + 1; // +1 for space between tags
+                }
+              }
+              
+              // Not on a tag or URL, play the sound
+              state.playingSound = clickedLine.sound.id;
+              render();
+              playSound(clickedLine.sound.url, clickedLine.sound.id, () => {
+                if (state.playingSound === clickedLine.sound.id) {
+                  state.playingSound = null;
+                  render();
+                }
+              });
+            }
+            // Tag result - switch to that tag filter
+            else if (clickedLine.type === 'tag-result') {
+              const tagIndex = allTags.indexOf(clickedLine.tag);
+              if (tagIndex >= 0) {
+                state.selectedTagIndex = tagIndex;
+                state.searchMode = false;
+                state.searchQuery = '';
+                state.searchResults = [];
+                state.selectedLine = 0;
+                state.targetSoundIndex = 0;
+                render();
+              }
+            }
+          }
+        }
+        // Scroll up (button 64) - scroll viewport up (like Vim ^y)
+        else if (buttonNum === 64) {
+          const minScroll = stickyNavbar ? contentStartIndexInLines : 0;
+          if (state.scrollOffset > minScroll) {
+            // Scroll by 3 lines for faster scrolling
+            state.scrollOffset = Math.max(minScroll, state.scrollOffset - 3);
+            
+            // Update selection to first visible interactive line
+            const firstVisibleIndex = state.scrollOffset;
+            let newSelection = state.selectedLine;
+            
+            // Find first interactive line in viewport
+            for (let i = firstVisibleIndex; i < lines.length; i++) {
+              const line = lines[i];
+              if (line.type === 'sound' || line.type === 'tag-result') {
+                newSelection = i;
+                break;
+              }
+            }
+            
+            state.selectedLine = newSelection;
+            
+            // Update target sound index
+            if (lines[newSelection] && lines[newSelection].type === 'sound') {
+              const soundLines = lines.filter(l => l.type === 'sound');
+              const soundIndex = soundLines.findIndex((_, idx) => {
+                const soundLineIndex = lines.findIndex(l => l === soundLines[idx]);
+                return soundLineIndex === newSelection;
+              });
+              if (soundIndex >= 0) {
+                state.targetSoundIndex = soundIndex;
+              }
+            }
+            
+            render();
+          }
+        }
+        // Scroll down (button 65) - scroll viewport down (like Vim ^e)
+        else if (buttonNum === 65) {
+          // Calculate available lines for content
+          const fixedHeaderLines = stickyNavbar ? (2 + tagBarLineCount + 1) : 0;
+          const fixedFooterLines = 2;
+          const availableContentLines = termHeight - fixedHeaderLines - fixedFooterLines;
+          const maxScroll = Math.max(0, lines.length - availableContentLines);
+          
+          if (state.scrollOffset < maxScroll) {
+            // Scroll by 3 lines for faster scrolling
+            state.scrollOffset = Math.min(maxScroll, state.scrollOffset + 3);
+            
+            // Update selection to first visible interactive line
+            const firstVisibleIndex = state.scrollOffset;
+            let newSelection = state.selectedLine;
+            
+            // Find first interactive line in viewport
+            for (let i = firstVisibleIndex; i < lines.length; i++) {
+              const line = lines[i];
+              if (line.type === 'sound' || line.type === 'tag-result') {
+                newSelection = i;
+                break;
+              }
+            }
+            
+            state.selectedLine = newSelection;
+            
+            // Update target sound index
+            if (lines[newSelection] && lines[newSelection].type === 'sound') {
+              const soundLines = lines.filter(l => l.type === 'sound');
+              const soundIndex = soundLines.findIndex((_, idx) => {
+                const soundLineIndex = lines.findIndex(l => l === soundLines[idx]);
+                return soundLineIndex === newSelection;
+              });
+              if (soundIndex >= 0) {
+                state.targetSoundIndex = soundIndex;
+              }
+            }
+            
+            render();
+          }
+        }
+      }
+      return;
+    }
+
+    // Picker mode: handle event selection
+    if (state.pickerMode) {
+      if (key === '\u001b' || key === '\u001b[D' || key === 'h') {
+        // ESC or Left arrow or 'h' - exit picker
+        state.pickerMode = false;
+        state.pickerSound = null;
+        render();
+        return;
+      } else if (key === '\u001b[A' || key === 'k') {
+        // Up arrow
+        if (state.pickerSelectedEvent > 0) {
+          state.pickerSelectedEvent--;
+        }
+        render();
+        return;
+      } else if (key === '\u001b[B' || key === 'j') {
+        // Down arrow
+        if (state.pickerSelectedEvent < availableEvents.length - 1) {
+          state.pickerSelectedEvent++;
+        }
+        render();
+        return;
+      } else if (key === '\r' || key === ' ') {
+        // Enter/Space - play current sound for selected event
+        const config = loadCurrentConfig();
+        const event = availableEvents[state.pickerSelectedEvent];
+        const currentSound = config.sounds ? config.sounds[event] : null;
+        if (currentSound) {
+          const soundEntry = sounds.find(s => s.id === currentSound || s.name === currentSound);
+          if (soundEntry) {
+            state.playingSound = soundEntry.id;
+            render();
+            playSound(soundEntry.url, soundEntry.id, () => {
+              state.playingSound = null;
+              render();
+            });
+          }
+        }
+        return;
+      } else if (key === '\u0013') {
+        // Ctrl+S - save assignment
+        const config = loadCurrentConfig();
+        const event = availableEvents[state.pickerSelectedEvent];
+        
+        if (!config.sounds) config.sounds = {};
+        config.sounds[event] = state.pickerSound.id;
+        
+        // Save to config file
+        const saved = saveConfig(config);
+        
+        if (saved) {
+          state.pickerMode = false;
+          state.pickerSound = null;
+        }
+        render();
+        return;
+      }
+      return; // Ignore other keys in picker mode
+    }
+    
+    const lines = buildLines();
+    
+    // Search mode: capture everything except ESC, Enter, and arrows
+    if (state.searchMode) {
+      if (key === '\u001b') {
+        // ESC - cancel search completely
+        state.searchMode = false;
+        state.searchQuery = '';
+        state.searchResults = [];
+        state.selectedLine = 0;
+        render();
+        return;
+      } else if (key === '\r' || key === '\u001b[A' || key === '\u001b[B') {
+        // Enter or Up/Down arrows - exit search box, keep results
+        const query = state.searchQuery.toLowerCase();
+        
+        // Get global search results (sounds + tags)
+        const matchingSounds = sounds.filter(sound => 
+          sound.name.toLowerCase().includes(query) ||
+          sound.id.toLowerCase().includes(query)
+        );
+        
+        const matchingTags = allTags.filter(tag => tag.toLowerCase().includes(query));
+        
+        // Combine and sort
+        const soundItems = matchingSounds.map(sound => ({ type: 'sound', data: sound }));
+        const tagItems = matchingTags.map(tag => ({ type: 'tag', data: tag }));
+        const displayItems = [...soundItems, ...tagItems].sort((a, b) => {
+          const aName = a.type === 'sound' ? a.data.name : a.data;
+          const bName = b.type === 'sound' ? b.data.name : b.data;
+          return aName.localeCompare(bName);
+        });
+        
+        state.searchResults = displayItems;
+        state.searchMode = false;
+        state.selectedLine = 0;
+        render();
+        
+        // If it was an arrow key, handle the navigation
+        if (key === '\u001b[A') {
+          // Will be handled in next iteration
+          process.stdin.emit('data', key);
+        } else if (key === '\u001b[B') {
+          process.stdin.emit('data', key);
+        }
+        return;
+      } else if (key === '\u007f') {
+        // Backspace
+        if (state.searchQuery.length === 0) {
+          // Exit search mode if query is empty
+          state.searchMode = false;
+          state.searchQuery = '';
+          state.searchResults = [];
+          render();
+          return;
+        }
+        state.searchQuery = state.searchQuery.slice(0, -1);
+        render();
+        return;
+      } else if (key.length === 1 && key >= ' ' && key <= '~') {
+        // Add printable character to search
+        state.searchQuery += key;
+        render();
+        return;
+      }
+      return; // Ignore other keys in search mode
+    }
+    
+    // Normal mode key handling
+    switch (key) {
+      case '\u001b': // ESC key
+        // Clear search if there's an active search
+        if (state.searchQuery) {
+          state.searchMode = false;
+          state.searchQuery = '';
+          state.searchResults = [];
+          state.selectedLine = 0;
+          render();
+        }
+        break;
+        
+      case 'q':
+        process.exit(0);
+        break;
+        
+      case '\u001b[A': // Up arrow
+      case 'k':
+        if (state.selectedLine > 0) {
+          state.selectedLine--;
+          // Skip non-interactive lines
+          while (state.selectedLine > 0 && 
+                 lines[state.selectedLine].type !== 'category' && 
+                 lines[state.selectedLine].type !== 'sound' &&
+                 lines[state.selectedLine].type !== 'tag-result') {
+            state.selectedLine--;
+          }
+          
+          // Ensure we're on an interactive line, if not find the first one
+          const currentLine = lines[state.selectedLine];
+          if (currentLine && 
+              currentLine.type !== 'category' && 
+              currentLine.type !== 'sound' && 
+              currentLine.type !== 'tag-result') {
+            // Find first interactive line
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i];
+              if (line.type === 'sound' || line.type === 'tag-result' || line.type === 'category') {
+                state.selectedLine = i;
+                break;
+              }
+            }
+          }
+          
+          // Update target index when manually navigating
+          const soundLines = lines.filter(l => l.type === 'sound');
+          const currentSoundIndex = soundLines.findIndex((_, idx) => {
+            const soundLineIndex = lines.findIndex(l => l === soundLines[idx]);
+            return soundLineIndex === state.selectedLine;
+          });
+          if (currentSoundIndex >= 0) {
+            state.targetSoundIndex = currentSoundIndex;
+          }
+        }
+        render();
+        break;
+        
+      case '\u001b[B': // Down arrow
+      case 'j':
+        if (state.selectedLine < lines.length - 1) {
+          state.selectedLine++;
+          // Skip non-interactive lines
+          while (state.selectedLine < lines.length - 1 && 
+                 lines[state.selectedLine].type !== 'category' && 
+                 lines[state.selectedLine].type !== 'sound' &&
+                 lines[state.selectedLine].type !== 'tag-result') {
+            state.selectedLine++;
+          }
+          // Update target index when manually navigating
+          const soundLines = lines.filter(l => l.type === 'sound');
+          const currentSoundIndex = soundLines.findIndex((_, idx) => {
+            const soundLineIndex = lines.findIndex(l => l === soundLines[idx]);
+            return soundLineIndex === state.selectedLine;
+          });
+          if (currentSoundIndex >= 0) {
+            state.targetSoundIndex = currentSoundIndex;
+          }
+        }
+        render();
+        break;
+        
+      case '\u001b[C': // Right arrow
+      case 'l':
+        // Navigate tags right, maintaining sound position
+        if (state.selectedTagIndex < allTags.length - 1) {
+          state.selectedTagIndex++;
+          
+          // Find the sound at targetSoundIndex in new view
+          const newLines = buildLines();
+          const soundLines = newLines.filter(l => l.type === 'sound');
+          
+          if (soundLines.length > 0) {
+            // Try to go to targetSoundIndex, or last sound if not enough
+            const targetIndex = Math.min(state.targetSoundIndex, soundLines.length - 1);
+            const targetSoundLine = soundLines[targetIndex];
+            state.selectedLine = newLines.indexOf(targetSoundLine);
+          } else {
+            state.selectedLine = 0;
+          }
+        }
+        render();
+        break;
+        
+      case '\u001b[D': // Left arrow
+      case 'h':
+        // Navigate tags left, maintaining sound position
+        if (state.selectedTagIndex > -1) {
+          state.selectedTagIndex--;
+          
+          // Find the sound at targetSoundIndex in new view
+          const newLines = buildLines();
+          const soundLines = newLines.filter(l => l.type === 'sound');
+          
+          if (soundLines.length > 0) {
+            // Try to go to targetSoundIndex, or last sound if not enough
+            const targetIndex = Math.min(state.targetSoundIndex, soundLines.length - 1);
+            const targetSoundLine = soundLines[targetIndex];
+            state.selectedLine = newLines.indexOf(targetSoundLine);
+          } else {
+            state.selectedLine = 0;
+          }
+        }
+        render();
+        break;
+        
+      case '/':
+        // Enter search mode (or re-enter if results are showing)
+        state.searchMode = true;
+        if (!state.searchQuery) {
+          state.searchQuery = '';
+          state.searchResults = [];
+        }
+        // Keep current search query to refine it
+        render();
+        break;
+        
+      case 's':
+        // Open event picker for selected sound
+        {
+          const selectedLine = lines[state.selectedLine];
+          if (selectedLine && selectedLine.type === 'sound') {
+            state.pickerMode = true;
+            state.pickerSelectedEvent = 0;
+            state.pickerSound = selectedLine.sound;
+            render();
+          }
+        }
+        break;
+        
+      case 'p':
+      case '\r': // Enter key
+      case ' ':  // Space key
+        {
+          const selectedLine = lines[state.selectedLine];
+        
+        if (selectedLine.type === 'category') {
+          // Toggle collapse for categories
+          state.collapsed[selectedLine.category] = !state.collapsed[selectedLine.category];
+          render();
+        } else if (selectedLine.type === 'tag-result') {
+          // Switch to the selected tag filter
+          const tagIndex = allTags.indexOf(selectedLine.tag);
+          if (tagIndex >= 0) {
+            state.selectedTagIndex = tagIndex;
+            state.searchMode = false;
+            state.searchQuery = '';
+            state.searchResults = [];
+            state.selectedLine = 0;
+            state.targetSoundIndex = 0;
+            render();
+          }
+        } else if (selectedLine.type === 'sound') {
+          // Play sound
+          state.playingSound = selectedLine.sound.id;
+          render();
+          
+          // Play sound with callback to clear indicator when done
+          playSound(selectedLine.sound.url, selectedLine.sound.id, () => {
+            // Clear playing indicator when sound finishes
+            if (state.playingSound === selectedLine.sound.id) {
+              state.playingSound = null;
+              render();
+            }
+          });
+        }
+        }
+        break;
+    }
+  });
+}
+
+// Run the browser
+browse().catch((err) => {
+  console.error("\x1b[31mError:\x1b[0m", err.message);
+  process.exit(1);
+});

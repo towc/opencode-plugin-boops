@@ -1,0 +1,71 @@
+# OpenCode Boops Plugin Configuration
+# Sounds can be local file paths OR URLs (automatically downloaded and cached)
+
+# player = "paplay"  # Auto-detected if not set (paplay/aplay/afplay)
+
+[sounds]
+"session.idle" = "1150-pristine"  # AI completes response
+"permission.asked" = "1217-relax"  # AI needs permission
+"session.error" = "1219-magic"  # Error occurs
+
+# You can use:
+# - Sound IDs: "pristine" (searches notificationsounds.com)
+# - Numeric IDs: "1150-pristine" (direct match, faster)
+# - Full URLs: "https://example.com/sound.ogg"
+# - Local paths: "/usr/share/sounds/..."
+
+# Advanced: Event filters (play sound only when conditions match)
+# Uncomment and adjust after checking logs to see available properties
+# [sounds.session.idle]
+# sound = "1150-pristine"
+# not_if = { agent = "explore" }  # Don't play for subagent completions
+
+# Optional events (uncomment to enable):
+# Command events
+# "command.executed" = "/path/to/sound"  # Command executed
+
+# File events
+# "file.edited" = "/path/to/sound"  # File edited
+# "file.watcher.updated" = "/path/to/sound"  # File watcher detected change
+
+# Installation events
+# "installation.updated" = "/path/to/sound"  # Installation/package updated
+
+# LSP events
+# "lsp.client.diagnostics" = "/path/to/sound"  # LSP diagnostics received
+# "lsp.updated" = "/path/to/sound"  # LSP server updated
+
+# Message events
+# "message.part.removed" = "/path/to/sound"  # Message part removed
+# "message.part.updated" = "/path/to/sound"  # Message part updated
+# "message.removed" = "/path/to/sound"  # Message removed
+# "message.updated" = "/path/to/sound"  # Message updated
+
+# Permission events
+# "permission.replied" = "/path/to/sound"  # Permission response given
+
+# Server events
+# "server.connected" = "/path/to/sound"  # Connected to server
+
+# Session events
+# "session.created" = "/path/to/sound"  # New session created
+# "session.compacted" = "/path/to/sound"  # Session compacted
+# "session.deleted" = "/path/to/sound"  # Session deleted
+# "session.diff" = "/path/to/sound"  # Session diff generated
+# "session.status" = "/path/to/sound"  # Session status changed
+# "session.updated" = "/path/to/sound"  # Session updated
+
+# Todo events
+# "todo.updated" = "/path/to/sound"  # Todo list updated
+
+# Tool events
+# "tool.execute.before" = "/path/to/sound"  # Before tool execution
+# "tool.execute.after" = "/path/to/sound"  # After tool execution
+
+# TUI events
+# "tui.prompt.append" = "/path/to/sound"  # Text appended to prompt
+# "tui.command.execute" = "/path/to/sound"  # TUI command executed
+# "tui.toast.show" = "/path/to/sound"  # Toast notification shown
+
+[fallbacks]
+# default = "/usr/share/sounds/alsa/Front_Center.wav"  # Optional: local fallback if download fails
