@@ -1,6 +1,6 @@
 {
   "name": "opencode-plugin-boops",
-  "version": "2.6.1",
+  "version": "2.6.2",
   "description": "Sound notifications for OpenCode - plays pleasant sounds when tasks complete or input is needed",
   "main": "index.ts",
   "type": "module",
