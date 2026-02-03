@@ -4,20 +4,19 @@
 # player = "paplay"  # Auto-detected if not set (paplay/aplay/afplay)
 
 [sounds]
-"session.idle" = "1150-pristine"  # AI completes response
-"permission.asked" = "1217-relax"  # AI needs permission
-"session.error" = "1219-magic"  # Error occurs
+"session.idle" = "pristine"  # AI completes response
+"permission.asked" = "relax"  # AI needs permission
+"session.error" = "magic"  # Error occurs
 
 # You can use:
-# - Sound IDs: "pristine" (searches notificationsounds.com)
-# - Numeric IDs: "1150-pristine" (direct match, faster)
+# - Sound names: "pristine" (searches sounds.json by name)
 # - Full URLs: "https://example.com/sound.ogg"
 # - Local paths: "/usr/share/sounds/..."
 
 # Advanced: Event filters (play sound only when conditions match)
 # Uncomment and adjust after checking logs to see available properties
 # [sounds.session.idle]
-# sound = "1150-pristine"
+# sound = "pristine"
 # not_if = { agent = "explore" }  # Don't play for subagent completions
 
 # Optional events (uncomment to enable):

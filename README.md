@@ -81,13 +81,10 @@ Example configuration:
 # ~/.config/opencode/plugins/boops/boops.toml
 
 [sounds]
-# Simple: Use notificationsounds.com IDs (recommended)
-"session.idle" = "1150-pristine"
-"permission.asked" = "1217-relax"
-"session.error" = "1219-magic"
-
-# Or search by name (finds first match):
-# "session.idle" = "pristine"
+# Use sound names from sounds.json (recommended)
+"session.idle" = "pristine"
+"permission.asked" = "relax"
+"session.error" = "magic"
 
 # Or use full URLs:
 # "session.idle" = "https://example.com/sound.ogg"
@@ -100,13 +97,14 @@ Example configuration:
 
 The plugin supports multiple ways to specify sounds:
 
-**1. notificationsounds.com IDs (easiest):**
+**1. Sound names from sounds.json (easiest):**
 ```toml
-"session.idle" = "1150-pristine"  # Direct ID (fast)
-"session.idle" = "pristine"       # Search by name (slower, first match)
+"session.idle" = "pristine"
+"permission.asked" = "relax"
+"session.error" = "magic"
 ```
 
-Browse sounds at [notificationsounds.com](https://notificationsounds.com/notification-sounds) to find IDs.
+Use the TUI browser (`~/.config/opencode/plugins/boops/browse`) to explore all 448 sounds with semantic tags!
 
 **2. Full URLs:**
 ```toml
@@ -177,7 +175,7 @@ For advanced use cases, you can add filters to play sounds only when certain con
 
 ```toml
 [sounds.session.idle]
-sound = "https://notificationsounds.com/storage/sounds/file-sounds-1150-pristine.ogg"
+sound = "pristine"
 not_if = { agent = "explore" }  # Skip subagent completions
 ```
 
@@ -208,8 +206,9 @@ You can test sounds without restarting OpenCode using the custom tool:
 test-sound session.idle
 
 # Test a sound ID directly
+# Test by sound name
 test-sound pristine
-test-sound 1150-pristine
+test-sound "access granted computer voice"
 
 # Test a URL directly  
 test-sound https://example.com/sound.ogg
