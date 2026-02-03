@@ -15,15 +15,17 @@ const args = process.argv.slice(3);
 
 const commands = {
   install: join(__dirname, "install"),
+  uninstall: join(__dirname, "uninstall"),
   browse: join(__dirname, "browse"),
 };
 
 if (!commands[command]) {
   console.log("OpenCode Boops Plugin\n");
   console.log("Usage:");
-  console.log("  npx opencode-plugin-boops install  - Add plugin to OpenCode config");
-  console.log("  npx opencode-plugin-boops browse   - Browse and test sounds (default)");
-  console.log("  npx opencode-plugin-boops          - Same as browse");
+  console.log("  npx opencode-plugin-boops install    - Add plugin to OpenCode config");
+  console.log("  npx opencode-plugin-boops uninstall  - Remove plugin from config");
+  console.log("  npx opencode-plugin-boops browse     - Browse and test sounds (default)");
+  console.log("  npx opencode-plugin-boops            - Same as browse");
   process.exit(1);
 }
 

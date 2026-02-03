@@ -41,6 +41,7 @@
     "boops.default.toml",
     "cli/main",
     "cli/install",
+    "cli/uninstall",
     "cli/browse",
     "README.md",
     "LICENSE"

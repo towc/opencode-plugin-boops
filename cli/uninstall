@@ -1,0 +1,118 @@
+#!/usr/bin/env node
+/**
+ * OpenCode Boops Plugin - Uninstaller
+ * Removes the plugin from OpenCode config and optionally cleans up data
+ */
+
+import { existsSync, readFileSync, writeFileSync, rmSync } from "fs";
+import { join } from "path";
+import { homedir } from "os";
+import { createInterface } from "readline";
+
+const CONFIG_DIR = join(homedir(), ".config", "opencode");
+const CONFIG_PATH = join(CONFIG_DIR, "opencode.json");
+const PLUGIN_NAME = "opencode-plugin-boops";
+const PLUGIN_DIR = join(CONFIG_DIR, "plugins", "boops");
+const CACHE_DIR = join(homedir(), ".cache", "opencode", "boops");
+
+console.log("🔊 OpenCode Boops Plugin Uninstaller\n");
+
+// Remove from config
+if (existsSync(CONFIG_PATH)) {
+  try {
+    const content = readFileSync(CONFIG_PATH, "utf-8");
+    const config = JSON.parse(content);
+    
+    if (config.plugin) {
+      if (typeof config.plugin === "string") {
+        if (config.plugin === PLUGIN_NAME) {
+          delete config.plugin;
+          console.log("✓ Removed plugin from config");
+        } else {
+          console.log("ℹ Plugin not found in config");
+        }
+      } else if (Array.isArray(config.plugin)) {
+        const index = config.plugin.indexOf(PLUGIN_NAME);
+        if (index > -1) {
+          config.plugin.splice(index, 1);
+          if (config.plugin.length === 0) {
+            delete config.plugin;
+          }
+          console.log("✓ Removed plugin from config");
+        } else {
+          console.log("ℹ Plugin not found in config");
+        }
+      }
+      
+      writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n");
+    } else {
+      console.log("ℹ No plugins in config");
+    }
+  } catch (error) {
+    console.error("❌ Failed to update config:", error.message);
+    process.exit(1);
+  }
+} else {
+  console.log("ℹ No OpenCode config found");
+}
+
+// Ask about cleaning up data
+const rl = createInterface({
+  input: process.stdin,
+  output: process.stdout,
+});
+
+const shouldCleanup = process.argv.includes("--full") || process.argv.includes("-f");
+
+if (shouldCleanup) {
+  cleanup();
+} else {
+  console.log("\n📦 Plugin data locations:");
+  if (existsSync(PLUGIN_DIR)) {
+    console.log("  • Config & data:", PLUGIN_DIR);
+  }
+  if (existsSync(CACHE_DIR)) {
+    console.log("  • Cached sounds:", CACHE_DIR);
+  }
+  
+  console.log("\n🗑️  Clean up plugin data?");
+  console.log("  This will remove your custom config and cached sounds.");
+  
+  rl.question("\n  Remove data? [y/N] ", (answer) => {
+    if (answer.toLowerCase() === "y" || answer.toLowerCase() === "yes") {
+      cleanup();
+    } else {
+      console.log("\n✓ Kept plugin data (you can remove manually later)");
+      console.log("  rm -rf", PLUGIN_DIR);
+      console.log("  rm -rf", CACHE_DIR);
+    }
+    rl.close();
+  });
+}
+
+function cleanup() {
+  let removed = false;
+  
+  if (existsSync(PLUGIN_DIR)) {
+    rmSync(PLUGIN_DIR, { recursive: true, force: true });
+    console.log("✓ Removed plugin directory");
+    removed = true;
+  }
+  
+  if (existsSync(CACHE_DIR)) {
+    rmSync(CACHE_DIR, { recursive: true, force: true });
+    console.log("✓ Removed cached sounds");
+    removed = true;
+  }
+  
+  if (!removed) {
+    console.log("ℹ No plugin data found");
+  }
+  
+  console.log("\n✨ Uninstall complete!");
+  console.log("\n💡 Restart OpenCode to complete the removal");
+  
+  if (!shouldCleanup) {
+    rl.close();
+  }
+}
