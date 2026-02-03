@@ -171,33 +171,22 @@ export const BoopsPlugin: Plugin = async ({ client }) => {
     }
   }
 
-  // Get cache path for an event (no extension, stores by event name)
-  const getCachePath = (eventName: string): string => {
-    // Sanitize event name for filesystem (replace dots with dashes)
-    const safeName = eventName.replace(/\./g, "-")
-    return join(cacheDir, safeName)
+  // Get cache path for a sound (includes sound identifier for proper cache invalidation)
+  const getCachePath = (url: string): string => {
+    // Extract sound ID from URL or use hash of URL as cache key
+    // e.g., "file-sounds-773-a-taste-of-the-whip.ogg" -> "773"
+    const match = url.match(/file-sounds-(\d+)-/)
+    const soundId = match ? match[1] : Buffer.from(url).toString('base64').slice(0, 16)
+    return join(cacheDir, soundId)
   }
 
-  // Download and cache a sound file from URL for a specific event
+  // Download and cache a sound file from URL
   const downloadSound = async (url: string, eventName: string): Promise<string> => {
-    const cachedPath = getCachePath(eventName)
+    const cachedPath = getCachePath(url)
 
     // Return cached file if it exists
     if (existsSync(cachedPath)) {
       return cachedPath
-    }
-
-    // Delete any old cached file for this event (in case URL changed)
-    try {
-      const files = await readdir(cacheDir)
-      const safeName = eventName.replace(/\./g, "-")
-      for (const file of files) {
-        if (file.startsWith(safeName)) {
-          await unlink(join(cacheDir, file))
-        }
-      }
-    } catch {
-      // Ignore errors
     }
 
     // Download the file
