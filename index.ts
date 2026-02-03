@@ -171,13 +171,24 @@ export const BoopsPlugin: Plugin = async ({ client }) => {
     }
   }
 
-  // Get cache path for a sound (includes sound identifier for proper cache invalidation)
+  // Get cache path for a sound (uses URL hash to ensure uniqueness)
   const getCachePath = (url: string): string => {
-    // Extract sound ID from URL or use hash of URL as cache key
-    // e.g., "file-sounds-773-a-taste-of-the-whip.ogg" -> "773"
-    const match = url.match(/file-sounds-(\d+)-/)
-    const soundId = match ? match[1] : Buffer.from(url).toString('base64').slice(0, 16)
-    return join(cacheDir, soundId)
+    // Use a hash of the URL to ensure unique cache keys
+    // This works for all URLs (notificationsounds.com, custom URLs, etc.)
+    const hash = Bun.hash(url).toString(16)
+    
+    // Try to preserve the file extension for better debugging
+    let ext = '.ogg'
+    try {
+      const urlObj = new URL(url)
+      const pathname = urlObj.pathname
+      const extMatch = pathname.match(/\.(\w+)$/)
+      if (extMatch) ext = `.${extMatch[1]}`
+    } catch {
+      // Use default extension if URL parsing fails
+    }
+    
+    return join(cacheDir, `${hash}${ext}`)
   }
 
   // Download and cache a sound file from URL
