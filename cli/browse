@@ -56,6 +56,37 @@ function isPluginInstalled() {
 
 const PLUGIN_INSTALLED = isPluginInstalled();
 
+// Event descriptions for the picker
+const eventDescriptions = {
+  "session.idle": "AI completes response",
+  "permission.asked": "AI needs permission",
+  "session.error": "Error occurs",
+  "command.executed": "Command executed",
+  "file.edited": "File edited",
+  "file.watcher.updated": "File watcher detected change",
+  "installation.updated": "Installation/package updated",
+  "lsp.client.diagnostics": "LSP diagnostics received",
+  "lsp.updated": "LSP server updated",
+  "message.part.removed": "Message part removed",
+  "message.part.updated": "Message part updated",
+  "message.removed": "Message removed",
+  "message.updated": "Message updated",
+  "permission.replied": "Permission response given",
+  "server.connected": "Connected to server",
+  "session.created": "New session created",
+  "session.compacted": "Session compacted",
+  "session.deleted": "Session deleted",
+  "session.diff": "Session diff generated",
+  "session.status": "Session status changed",
+  "session.updated": "Session updated",
+  "todo.updated": "Todo list updated",
+  "tool.execute.before": "Before tool execution",
+  "tool.execute.after": "After tool execution",
+  "tui.prompt.append": "Text appended to prompt",
+  "tui.command.execute": "TUI command executed",
+  "tui.toast.show": "Toast notification shown"
+};
+
 // Load current boops.toml config
 function loadCurrentConfig() {
   const configPath = join(homedir(), ".config", "opencode", "plugins", "boops", "boops.toml");
@@ -1115,9 +1146,13 @@ async function browse() {
       const boxHeight = Math.min(availableEvents.length + 4, termHeight - boxStartY - fixedFooterLines);
       
       // Calculate scroll offset for event list
-      const maxVisibleEvents = boxHeight - 4; // Reserve space for header(2) + footer(2)
+      const maxVisibleEvents = boxHeight - 6; // Reserve space for header(2) + description(2) + footer(2)
       const eventScrollOffset = Math.max(0, Math.min(state.pickerSelectedEvent - Math.floor(maxVisibleEvents / 2), availableEvents.length - maxVisibleEvents));
       const eventEndIndex = Math.min(eventScrollOffset + maxVisibleEvents, availableEvents.length);
+      
+      // Get selected event info
+      const selectedEvent = availableEvents[state.pickerSelectedEvent];
+      const eventDesc = eventDescriptions[selectedEvent] || "No description available";
       
       // Draw each line of the picker box
       for (let row = 0; row < boxHeight; row++) {
@@ -1141,6 +1176,14 @@ async function browse() {
         } else if (row === 2) {
           // Separator
           process.stdout.write(`\x1b[38;5;240m├${'─'.repeat(pickerWidth - 2)}┤\x1b[0m`);
+        } else if (row === boxHeight - 3) {
+          // Separator before description
+          process.stdout.write(`\x1b[38;5;240m├${'─'.repeat(pickerWidth - 2)}┤\x1b[0m`);
+        } else if (row === boxHeight - 2) {
+          // Event description
+          const desc = eventDesc.length > pickerWidth - 4 ? eventDesc.slice(0, pickerWidth - 7) + '...' : eventDesc;
+          const padding = ' '.repeat(Math.max(0, pickerWidth - desc.length - 4));
+          process.stdout.write(`\x1b[38;5;240m│\x1b[0m \x1b[38;5;246m${desc}\x1b[0m${padding} \x1b[38;5;240m│\x1b[0m`);
         } else if (row === boxHeight - 1) {
           // Bottom border
           process.stdout.write(`\x1b[38;5;240m└${'─'.repeat(pickerWidth - 2)}┘\x1b[0m`);
@@ -1231,7 +1274,7 @@ async function browse() {
       let controls;
       if (state.pickerMode) {
         controls = PLUGIN_INSTALLED 
-          ? ' \x1b[38;5;240m↑/↓ select event  enter play  ctrl+s save  ←/esc close\x1b[0m'
+          ? ' \x1b[38;5;240m↑/↓ select  enter play  ctrl+s save  d unassign  ←/esc close\x1b[0m'
           : ' \x1b[38;5;240m↑/↓ select event  enter play  ←/esc close  \x1b[38;5;208m(save disabled)\x1b[0m';
       } else {
         controls = ' \x1b[38;5;240m↑/↓ navigate  ←/→ tags  / search  s assign  enter play  q quit\x1b[0m';
@@ -1894,6 +1937,19 @@ async function browse() {
         saveConfig(config);
         
         // Stay in picker mode, just show it was saved
+        render();
+        return;
+      } else if (key === 'd') {
+        // 'd' - unassign/delete sound from selected event
+        const config = loadCurrentConfig();
+        const event = availableEvents[state.pickerSelectedEvent];
+        
+        if (config.sounds && config.sounds[event]) {
+          delete config.sounds[event];
+          saveConfig(config);
+        }
+        
+        // Stay in picker mode
         render();
         return;
       }
