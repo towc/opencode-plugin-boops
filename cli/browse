@@ -5,6 +5,7 @@ import { fileURLToPath } from "url";
 import { homedir } from "os";
 import { spawn, exec } from "child_process";
 import https from "https";
+import { parse } from "smol-toml";
 
 // Get the directory where this script is located
 const __filename = fileURLToPath(import.meta.url);
@@ -96,32 +97,7 @@ function loadCurrentConfig() {
   
   try {
     const content = readFileSync(configPath, "utf-8");
-    const config = {};
-    
-    // Simple TOML parser for our use case
-    const lines = content.split("\n");
-    let currentSection = null;
-    
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      
-      // Section header
-      if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-        currentSection = trimmed.slice(1, -1);
-        if (!config[currentSection]) config[currentSection] = {};
-        continue;
-      }
-      
-      // Key = value (handle quoted keys like "session.error")
-      const match = trimmed.match(/^"?([^"=]+)"?\s*=\s*"?([^"]+)"?$/);
-      if (match && currentSection) {
-        const [, key, value] = match;
-        config[currentSection][key.trim()] = value.trim().replace(/"/g, "");
-      }
-    }
-    
-    return config;
+    return parse(content);
   } catch (e) {
     return {};
   }
