@@ -1240,7 +1240,7 @@ async function browse() {
       let controls;
       if (state.pickerMode) {
         controls = PLUGIN_INSTALLED 
-          ? ' \x1b[38;5;240m↑/↓ select  enter play  ctrl+s save  d unassign  ←/esc close\x1b[0m'
+          ? ' \x1b[38;5;240m↑/↓ select  enter play  a assign  d unassign  ←/esc close\x1b[0m'
           : ' \x1b[38;5;240m↑/↓ select event  enter play  ←/esc close  \x1b[38;5;208m(save disabled)\x1b[0m';
       } else {
         controls = ' \x1b[38;5;240m↑/↓ navigate  ←/→ tags  / search  s assign  enter play  q quit\x1b[0m';
@@ -1891,18 +1891,18 @@ async function browse() {
           }
         }
         return;
-      } else if (key === '\u0013') {
-        // Ctrl+S - save assignment (stay in picker mode to assign more)
+      } else if (key === 'a') {
+        // 'a' - assign sound to selected event (auto-saves)
         const config = loadCurrentConfig();
         const event = availableEvents[state.pickerSelectedEvent];
         
         if (!config.sounds) config.sounds = {};
         config.sounds[event] = state.pickerSound.name; // Save friendly name, not ID
         
-        // Save to config file
+        // Auto-save to config file
         saveConfig(config);
         
-        // Stay in picker mode, just show it was saved
+        // Stay in picker mode to assign more
         render();
         return;
       } else if (key === 'd') {
