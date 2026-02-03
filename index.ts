@@ -68,9 +68,9 @@ export const BoopsPlugin: Plugin = async ({ client }) => {
   const loadConfig = async (): Promise<BoopsConfig> => {
     let config: BoopsConfig = {
       sounds: {
-        "session.idle": "1150-pristine",
-        "permission.asked": "1217-relax",
-        "session.error": "1219-magic",
+        "session.idle": "pristine",
+        "permission.asked": "relax",
+        "session.error": "magic",
       },
       fallbacks: {
         default: "/usr/share/sounds/alsa/Front_Center.wav"
@@ -315,7 +315,8 @@ export const BoopsPlugin: Plugin = async ({ client }) => {
       // Log session.idle events for debugging (helpful for users configuring filters)
       if (event.type === "session.idle") {
         await log(`session.idle event received`, { 
-          properties: event 
+          properties: event,
+          configuredSound: config.sounds["session.idle"]
         })
       }
 
