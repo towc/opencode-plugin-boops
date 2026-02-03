@@ -49,12 +49,13 @@ Then restart OpenCode. The plugin will be automatically downloaded and installed
 # Install plugin (adds to OpenCode config)
 npx opencode-plugin-boops install
 
+# Configure sounds (TUI browser)
+npx opencode-plugin-boops config           # Same as browse
+npx opencode-plugin-boops browse           # Browse 448 sounds with semantic tags
+
 # Uninstall plugin (removes from config)
 npx opencode-plugin-boops uninstall        # Interactive - asks about data cleanup
 npx opencode-plugin-boops uninstall --full # Remove plugin + data
-
-# Browse 448 sounds with semantic tags
-npx opencode-plugin-boops browse
 
 # Show help
 npx opencode-plugin-boops

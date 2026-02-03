@@ -17,6 +17,7 @@ const commands = {
   install: join(__dirname, "install"),
   uninstall: join(__dirname, "uninstall"),
   browse: join(__dirname, "browse"),
+  config: join(__dirname, "browse"), // Alias for browse
 };
 
 // Show help if no command or invalid command
@@ -25,7 +26,8 @@ if (!command || !commands[command]) {
   console.log("Usage:");
   console.log("  npx opencode-plugin-boops install    - Add plugin to OpenCode config");
   console.log("  npx opencode-plugin-boops uninstall  - Remove plugin from config");
-  console.log("  npx opencode-plugin-boops browse     - Browse and test sounds");
+  console.log("  npx opencode-plugin-boops config     - Configure sounds (TUI)");
+  console.log("  npx opencode-plugin-boops browse     - Browse and test sounds (same as config)");
   console.log("");
   console.log("448 sounds with semantic tags (human, speech, ding, alarm, etc.)");
   process.exit(command ? 1 : 0);

@@ -1116,9 +1116,20 @@ async function browse() {
             const currentSound = config.sounds ? config.sounds[event] : null;
             
             const bg = isSelected ? '\x1b[48;5;235m' : '';
-            const eventText = event.length > pickerWidth - 6 
-              ? event.slice(0, pickerWidth - 9) + '...' 
-              : event.padEnd(pickerWidth - 6);
+            
+            // Show current sound if selected event has one
+            let eventText;
+            if (isSelected && currentSound) {
+              const soundName = currentSound.length > 15 ? currentSound.slice(0, 12) + '...' : currentSound;
+              const label = event.length > pickerWidth - soundName.length - 10 
+                ? event.slice(0, pickerWidth - soundName.length - 13) + '...' 
+                : event;
+              eventText = `${label} \x1b[38;5;240m→ \x1b[38;5;76m${soundName}\x1b[0m${bg}`.padEnd(pickerWidth - 6 + 20); // +20 for ANSI codes
+            } else {
+              eventText = event.length > pickerWidth - 6 
+                ? event.slice(0, pickerWidth - 9) + '...' 
+                : event.padEnd(pickerWidth - 6);
+            }
             
             const indicator = currentSound ? '•' : ' ';
             const indicatorColor = currentSound ? '\x1b[38;5;76m' : '';
