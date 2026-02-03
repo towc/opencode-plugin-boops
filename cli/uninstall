@@ -57,16 +57,19 @@ if (existsSync(CONFIG_PATH)) {
 }
 
 // Ask about cleaning up data
+const shouldCleanup = process.argv.includes("--full") || process.argv.includes("-f");
+
+if (shouldCleanup) {
+  cleanup();
+  process.exit(0);
+}
+
 const rl = createInterface({
   input: process.stdin,
   output: process.stdout,
 });
 
-const shouldCleanup = process.argv.includes("--full") || process.argv.includes("-f");
-
-if (shouldCleanup) {
-  cleanup();
-} else {
+{
   console.log("\n📦 Plugin data locations:");
   if (existsSync(PLUGIN_DIR)) {
     console.log("  • Config & data:", PLUGIN_DIR);
@@ -111,8 +114,4 @@ function cleanup() {
   
   console.log("\n✨ Uninstall complete!");
   console.log("\n💡 Restart OpenCode to complete the removal");
-  
-  if (!shouldCleanup) {
-    rl.close();
-  }
 }
