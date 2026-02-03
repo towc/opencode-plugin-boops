@@ -62,7 +62,7 @@ export const BoopsPlugin: Plugin = async ({ client }) => {
     // Directory might already exist
   }
 
-  const configPath = join(homedir(), ".config", "opencode", "boops.toml")
+  const configPath = join(homedir(), ".config", "opencode", "plugins", "boops", "boops.toml")
 
   // Load configuration (can be called multiple times to reload)
   const loadConfig = async (): Promise<BoopsConfig> => {

@@ -33,7 +33,7 @@
     "smol-toml": "^1.3.1"
   },
   "scripts": {
-    "postinstall": "node -e \"const fs=require('fs'),p=require('path'),h=require('os').homedir(),d=p.join(h,'.config','opencode','plugins','boops');fs.mkdirSync(d,{recursive:true});fs.copyFileSync(p.join(__dirname,'cli','browse'),p.join(d,'browse'));fs.copyFileSync(p.join(__dirname,'sounds.json'),p.join(d,'sounds.json'));fs.chmodSync(p.join(d,'browse'),0o755);console.log('✓ Installed browse CLI to ~/.config/opencode/plugins/boops/browse')\""
+    "postinstall": "node -e \"const fs=require('fs'),p=require('path'),h=require('os').homedir(),d=p.join(h,'.config','opencode','plugins','boops');fs.mkdirSync(d,{recursive:true});const cfg=p.join(d,'boops.toml');if(!fs.existsSync(cfg))fs.copyFileSync(p.join(__dirname,'boops.default.toml'),cfg);fs.copyFileSync(p.join(__dirname,'cli','browse'),p.join(d,'browse'));fs.copyFileSync(p.join(__dirname,'sounds.json'),p.join(d,'sounds.json'));fs.chmodSync(p.join(d,'browse'),0o755);console.log('✓ Installed to ~/.config/opencode/plugins/boops/')\""
   },
   "files": [
     "index.ts",

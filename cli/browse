@@ -58,7 +58,7 @@ const PLUGIN_INSTALLED = isPluginInstalled();
 
 // Load current boops.toml config
 function loadCurrentConfig() {
-  const configPath = join(homedir(), ".config", "opencode", "boops.toml");
+  const configPath = join(homedir(), ".config", "opencode", "plugins", "boops", "boops.toml");
   if (!existsSync(configPath)) {
     return {};
   }
@@ -105,7 +105,7 @@ function saveConfig(config) {
     return false;
   }
   
-  const configPath = join(homedir(), ".config", "opencode", "boops.toml");
+  const configPath = join(homedir(), ".config", "opencode", "plugins", "boops", "boops.toml");
   let content = "# OpenCode Boops Plugin Configuration\n\n[sounds]\n";
   
   if (config.sounds) {

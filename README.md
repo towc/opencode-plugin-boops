@@ -64,21 +64,21 @@ Sounds are downloaded once on first use and cached in `~/.cache/opencode/boops/`
 
 ## Configuration
 
-The plugin uses a TOML configuration file located at `~/.config/opencode/boops.toml`.
+The plugin automatically creates a configuration file at `~/.config/opencode/plugins/boops/boops.toml` on first install.
 
-### Create your config
+### Customize your config
 
-Copy the default configuration:
+The config is automatically created from `boops.default.toml` when you install the plugin. Edit it to customize your sounds:
 
 ```bash
-# Get the default config template
-curl -o ~/.config/opencode/boops.toml https://raw.githubusercontent.com/towc/opencode-plugin-boops/main/boops.default.toml
+# Edit your config
+$EDITOR ~/.config/opencode/plugins/boops/boops.toml
 ```
 
-Or create it manually:
+Example configuration:
 
 ```toml
-# ~/.config/opencode/boops.toml
+# ~/.config/opencode/plugins/boops/boops.toml
 
 [sounds]
 # Simple: Use notificationsounds.com IDs (recommended)
